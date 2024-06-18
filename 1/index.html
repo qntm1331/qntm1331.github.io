@@ -1,210 +1,44 @@
-<p data-ke-size="size16">컨테이너는 실제로 개별적인 컨셉이 아닌 리눅스의 cgroup, namespace등의 결합체이다.</p>
-<p data-ke-size="size16">보통의 hypervisor는 os 나 커널 기반으로 올라가지만 컨테이너는 파일 시스템의 가상화로 호스트의 커널을 공유한다.</p>
-<p data-ke-size="size16">&nbsp;</p>
-<ul style="list-style-type: disc;" data-ke-list-type="disc">
-<li>cgroup(control group)은 프로세스들이 사용하는 시스템 자원을 수집, 제한한다.</li>
-<li>namespace는 리눅스 커널에서 프로세스 자원을 격리한다.</li>
-</ul>
-<p>[##_ImageGrid|kage@bIJHLa/btsGPoSifKe/4zM6oAoYy6Jaacc4mgk0Hk/img.png,kage@c3xVsV/btsGNei3iSv/1bk5U1hbEeUKkECuzeH7Hk/img.png|width="396" height="306" data-origin-width="740" data-origin-height="572" data-is-animation="false" style="width: 34.9037%; margin-right: 10px;" data-widthpercent="35.31",data-origin-width="782" data-origin-height="330" data-is-animation="false" width="521" height="220" style="width: 63.9335%;" data-widthpercent="64.69"|_##]</p>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size16">&nbsp;</p>
-<h2 data-ke-size="size26">도커 컨테이너 생성 시 system call 분석</h2>
-<p data-ke-size="size16">strace를 이용하여 컨테이너 생성시 containerd(도커 런타임)의 프로세스 추적</p>
-<pre id="code_1713707196738" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ strace -f -p `pidof containerd` -o strace_log
-$ docker run -itd --name busybox_1 --rm busybox</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size18">1. containerd-shim-runc 실행</p>
-<pre id="code_1713707171560" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ vi strace_log
-301991 execve("/usr/bin/containerd-shim-runc-v2", ["/usr/bin/containerd-shim-runc-v2", "-namespace", "moby", "-address", "/run/containerd/containerd.sock", "-publish-binary", "/usr/bin/containerd", "-id", "e7cdf052dff295586824177cd096f055"..., "start"], 0xc0002c8000 /* 12 vars */ &lt;unfinished ...&gt;
-...
-301991 execve("/usr/bin/containerd-shim-runc-v2", ["/usr/bin/containerd-shim-runc-v2", "-namespace", "moby", "-address", "/run/containerd/containerd.sock", "-publish-binary", "/usr/bin/containerd", "-id", "e7cdf052dff295586824177cd096f055"..., "start"], 0xc0002c8000 /* 12 vars */ &lt;unfinished ...&gt;</code></pre>
-<p data-ke-size="size16">도커는 containerd를 사용하여 컨테이너를 관리하고, containerd가 다시 containerd-shim-runc을 사용하여 컨테이너를 실행한다.&nbsp;</p>
-<p data-ke-size="size16">containerd-shim-runc은 컨테이너를 시작하고 관리하는 중간 계층 프로세스로서, 컨테이너의 실행과 관련된 작업을 수행한다. (프로세스 실행, 네트워크 연결, 파일 시스템 마운트 및 제어 등의 작업을 담당)</p>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size18">2.&nbsp; unshare를 이용한 컨텍스트 분리</p>
-<pre id="code_1713708405450" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ vi strace_log
-302027 unshare(CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWPID|CLONE_NEWNET &lt;unfinished ...&gt;</code></pre>
-<p data-ke-size="size16">unshare 는 새로운 네임스페이스를 생성하고, 지정된 프로그램을 해당 네임스페이스 내에서 실행한다.</p>
-<p data-ke-size="size16">linux manual page에서는 unshare를 다음과 같이 설명하고 있다.</p>
-<pre id="code_1713708589523" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>unshare() 함수는 프로세스(또는 스레드)가 현재 다른 프로세스(또는 스레드)와 공유되고 있는 실행 컨텍스트의 일부를 분리할 수 있게 합니다.
-새로운 프로세스가 fork(2) 또는 vfork(2)를 사용하여 생성될 때 일부 실행 컨텍스트(예: 마운트 네임스페이스)는 암묵적으로 공유되지만 다른 부분(예: 가상 메모리)은 clone(2)를 사용하여 프로세스 또는 스레드를 생성할 때 명시적으로 공유될 수 있습니다.
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+    body {
+      color: #FEFEFE;
+      background-color: #0A0B11;
+      margin: 0 auto;
+      padding: 1em 0 1em 0;
+    }
+    a { 
+      color: #93ffd7;
+      text-decoration: none; 
+    }
+    @font-face { 
+      font-family: "unifont"; 
+      src: url("./unifont.woff") format('woff'); 
+    }
+    pre { 
+      font-family: "unifont", "Lucida Console", monospace, Monaco; 
+      font-size:16px; 
+      line-height: 1.0;
+      padding-left: 20px;
+    }
+    .txtdiv {
+      display: block;
+      text-align: left;
+    }
+    </style>
+    <title>jc3wrld999</title>
+</head>
 
-unshare()의 주요 사용은 새로운 프로세스를 생성하지 않고도 공유된 실행 컨텍스트를 제어할 수 있도록 하는 것입니다.
+<body>
+<pre>
+컨테이너는 실제로 개별적인 컨셉이 아닌 리눅스의 cgroup, namespace등의 결합체이다.
 
-flags 인자는 실행 컨텍스트의 어떤 부분을 분리해야 하는지를 지정하는 비트 마스크입니다. 이 인자는 다음 상수들을 OR 연산하여 지정합니다.</code></pre>
-<p data-ke-size="size16">unshare 네임스페이스를 생성 예시</p>
-<pre id="code_1713708873776" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>-- PID 네임스페이스 생성: PID 네임스페이스를 생성하고, 새로운 PID 네임스페이스에서 프로세스의 PID를 확인
-unshare --fork --pid --mount-proc readlink /proc/self
-
--- user 네임스페이스 생성: 사용자의 자격 증명을 루트 ID로 매핑하는 새로운 사용자 네임스페이스를 생성
-unshare --user --map-root-user sh -c 'whoami; cat /proc/self/uid_map /proc/self/gid_map'
-
--- mnt 네임스페이스 생성: 지정된 경로에 새로운 마운트 네임스페이스를 생
-unshare --mount=/root/namespaces/mnt
-이 예제는 지정된 경로에 새로운 마운트 네임스페이스를 생성합니다.
-
--- time 네임스페이스 생성: 부트 타임 시계를 과거로 설정하여 새로운 시간 네임스페이스에서 시간을 확인
-unshare --time --fork --boottime 300000000 uptime -p</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size16">아래와 같이 unshare를 사용하여 새로운 PID 네임스페이스와 마운트된 proc 파일 시스템을 갖는 새로운 네임스페이스를 생성하는 간단한 컨테이너 환경을 구축할 수 있다.</p>
-<pre id="code_1713711375126" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>-- unshare -fp: 새로운 PID 네임스페이스를 만들고 프로세스를 fork하지 않고 실행
--- mount-proc: 새로운 네임스페이스에 마운트된 proc 파일 시스템을 생성
-$ unshare -fp --mount-proc /bin/bash
-
--- 현재 셸은 PID 1( init 프로세스 )이 되었으며, 새로운 PID 네임스페이스에서 실행 중
-$ ps
-    PID TTY          TIME CMD
-      1 pts/1    00:00:00 bash
-      7 pts/1    00:00:00 ps</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size16">3. unshare process (302027)에서 자식프로세스 (302028) 프로세스생성</p>
-<pre id="code_1713709978357" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ vi strace_log
-302027 unshare(CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWIPC|CLONE_NEWPID|CLONE_NEWNET &lt;unfinished ...&gt;
--- 자식 프로세스 생성
-302027 clone(child_stack=0x7ffccb524d40, flags=CLONE_PARENT|SIGCHLD &lt;unfinished ...&gt;
-302028 close(10 &lt;unfinished ...&gt;
-302027 &lt;... clone resumed&gt;)             = 302028
-
--- process 2 (302028) 를 init 함수로 지정
-302028 prctl(PR_SET_NAME, "runc:[2:INIT]" &lt;unfinished ...&gt;</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size16">CLONE_NEWPID 플래그를 사용하는 경우, 호출 프로세스는 새로운 네임스페이스로 이동되지 않으며, 이후에 생성되는 첫 번째 자식 프로세스는 프로세스 ID 1을 갖게 된다. 이 자식 프로세스는 새로운 네임스페이스에서 init(1)의 역할을 수행한다.</p>
-<pre id="code_1713709225380" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>CLONE_NEWPID (Linux 3.8 이상)
-    이 플래그는 clone(2)의 CLONE_NEWPID 플래그와 동일한 효과를 갖습니다.
-    호출 프로세스에게 새로운 PID 네임스페이스를 만들어 자식 프로세스에게 이전에 존재하는 프로세스와 공유되지 않는 새로운 PID 네임스페이스를 부여합니다.
-    호출 프로세스는 새로운 네임스페이스로 이동되지 않습니다.
-    호출 프로세스에 의해 생성된 첫 번째 자식 프로세스는 프로세스 ID 1을 갖게 되며, 새로운 네임스페이스에서 init(1)의 역할을 수행합니다.
-    CLONE_NEWPID는 자동으로 CLONE_THREAD를 함께 의미합니다.</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<pre id="code_1713710586937" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ vi strace_log
--- unshare() 시스템 호출을 사용하여 새로운 cgroup 네임스페이스를 생성
-302028 unshare(CLONE_NEWCGROUP &lt;unfinished ...&gt;
-
--- 새로운 스레드(pid 2)를 생성
-302028 clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7f263cf99990, parent_tid=0x7f263cf99990, exit_signal=0, stack=0x7f263c799000, stack_size=0x7fff80, tls=0x7f263cf996c0} =&gt; {parent_tid=[2]}, 88) = 2
-302029 rseq(0x7f263cf99fe0, 0x20, 0, 0x53053053 &lt;unfinished ...&gt;</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size18">4. 결론</p>
-<p data-ke-size="size16">도커는 컨테이너 실행 시 containerd 데몬에서 unshare 함수를 콜하여 호스트 시스템과 격리된 네임스페이스를 생성한다.</p>
-<pre id="code_1713712471877" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>function bocker_run() { #HELP Create a container:\nBOCKER run &lt;image_id&gt; &lt;command&gt;
-	uuid="ps_$(shuf -i 42002-42254 -n 1)"
-	[[ "$(bocker_check "$1")" == 1 ]] &amp;&amp; echo "No image named '$1' exists" &amp;&amp; exit 1
-	[[ "$(bocker_check "$uuid")" == 0 ]] &amp;&amp; echo "UUID conflict, retrying..." &amp;&amp; bocker_run "$@" &amp;&amp; return
-	cmd="${@:2}" &amp;&amp; ip="$(echo "${uuid: -3}" | sed 's/0//g')" &amp;&amp; mac="${uuid: -3:1}:${uuid: -2}"
-	ip link add dev veth0_"$uuid" type veth peer name veth1_"$uuid"
-	ip link set dev veth0_"$uuid" up
-	ip link set veth0_"$uuid" master bridge0
-	ip netns add netns_"$uuid"
-	ip link set veth1_"$uuid" netns netns_"$uuid"
-	ip netns exec netns_"$uuid" ip link set dev lo up
-	ip netns exec netns_"$uuid" ip link set veth1_"$uuid" address 02:42:ac:11:00"$mac"
-	ip netns exec netns_"$uuid" ip addr add 10.0.0."$ip"/24 dev veth1_"$uuid"
-	ip netns exec netns_"$uuid" ip link set dev veth1_"$uuid" up
-	ip netns exec netns_"$uuid" ip route add default via 10.0.0.1
-	btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$uuid" &gt; /dev/null
-	echo 'nameserver 8.8.8.8' &gt; "$btrfs_path/$uuid"/etc/resolv.conf
-	echo "$cmd" &gt; "$btrfs_path/$uuid/$uuid.cmd"
-	cgcreate -g "$cgroups:/$uuid"
-	: "${BOCKER_CPU_SHARE:=512}" &amp;&amp; cgset -r cpu.shares="$BOCKER_CPU_SHARE" "$uuid"
-	: "${BOCKER_MEM_LIMIT:=512}" &amp;&amp; cgset -r memory.limit_in_bytes="$((BOCKER_MEM_LIMIT * 1000000))" "$uuid"
-	cgexec -g "$cgroups:$uuid" \
-		ip netns exec netns_"$uuid" \
-		unshare -fmuip --mount-proc \
-		chroot "$btrfs_path/$uuid" \
-		/bin/sh -c "/bin/mount -t proc proc /proc &amp;&amp; $cmd" \
-		2&gt;&amp;1 | tee "$btrfs_path/$uuid/$uuid.log" || true
-	ip link del dev veth0_"$uuid"
-	ip netns del netns_"$uuid"
-}</code></pre>
-<p data-ke-size="size16">(출처: <a href="https://github.com/p8952/bocker" target="_blank" rel="noopener&nbsp;noreferrer">https://github.com/p8952/bocker</a>)</p>
-<p data-ke-size="size16">&nbsp;</p>
-<h2 data-ke-size="size26">커널 디버깅 환경 구성</h2>
-<p data-ke-size="size16">격리된 환경을 구성하고 커널을 디버깅하기 위해선 커널 디버깅 환경 설정이 필요하다.</p>
-<p data-ke-size="size16">커널 패키지 자동 업데이트 제외 설정</p>
-<pre id="code_1713696731036" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ apt-mark hold linux-image-generic linux-headers-generic</code></pre>
-<p data-ke-size="size16">커널 리포지토리에 현재 커널 소스 clone</p>
-<pre id="code_1713696764367" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ cat /proc/version_signature
-Ubuntu 6.5.0-28.29~22.04.1-generic 6.5.13
-$ lsb_release -cs
-jammy
-
--- 커널 소스 clone
-$ git clone https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/jammy
-$ cd jammy
-
-$  git tag -l | grep 6.5.0-28.29
-Ubuntu-hwe-6.5-6.5.0-28.29_22.04.1
-Ubuntu-lowlatency-hwe-6.5-6.5.0-28.29.1_22.04.1
-
-$ git checkout Ubuntu-hwe-6.5-6.5.0-28.29_22.04.1</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size18">커널 심볼 설치</p>
-<p data-ke-size="size16">ddebs.ubuntu.com 저장소를 시스템에 추가한다. 이 저장소에는 디버깅 심볼이 포함된 커널 이미지가 있다.</p>
-<pre id="code_1713697124794" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ echo "deb http://ddebs.ubuntu.com $(lsb_release -cs) main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ddebs.list
-$ echo "deb http://ddebs.ubuntu.com $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ddebs.list
-$ echo "deb http://ddebs.ubuntu.com $(lsb_release -cs)-proposed main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/ddebs.list</code></pre>
-<p data-ke-size="size16">ubuntu-dbgsym-keyring&nbsp;패키지를&nbsp;설치하여&nbsp;디버그&nbsp;패키지들이&nbsp;신뢰할&nbsp;수&nbsp;있는&nbsp;서명을&nbsp;가지고&nbsp;있는지&nbsp;확인한다.</p>
-<pre id="code_1713697194103" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ apt install ubuntu-dbgsym-keyring
-$ apt-get update</code></pre>
-<p data-ke-size="size16">linux-image-unsigned-&lt;커널 버전&gt;-generic-dbgsym과 linux-image-&lt;커널 버전&gt;-generic-dbgsym 패키지를 설치한다.</p>
-<pre id="code_1713697258776" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ apt-get install linux-image-unsigned-6.5.0-28-generic-dbgsym linux-image-6.5.0-28-generic-dbgsym</code></pre>
-<p data-ke-size="size16">설치된 패키지 확인</p>
-<pre id="code_1713704810611" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>$ apt-cache show linux-image-6.^Ceneric-dbgsym
-root@jc3wrld999-virtual-machine:/backup/ws/kernel-dbg# apt-cache show linux-image-6.5.0-28-generic-dbgsym
-Package: linux-image-6.5.0-28-generic-dbgsym
-Architecture: amd64
-Version: 6.5.0-28.29~22.04.1
-Priority: optional
-Section: devel
-Source: linux-signed-hwe-6.5
-Maintainer: Canonical Kernel Team &lt;kernel-team@lists.ubuntu.com&gt;
-Installed-Size: 26
-Depends: linux-image-unsigned-6.5.0-28-generic-dbgsym
-Filename: pool/main/l/linux-signed-hwe-6.5/linux-image-6.5.0-28-generic-dbgsym_6.5.0-28.29~22.04.1_amd64.ddeb
-Size: 19954
-MD5sum: 3a5443ed02212fc79de610b35f80bd30
-SHA1: 053a0a0e0c6e81a818e49206c0ca114017489527
-SHA256: dc64b35b9982b1726f81eabb99688059575b72f2868cacf80be42df0be78b58a
-SHA512: 0a6addef8dce2c294e5f02f98c91c953c1f51aa08dc38a49a55403844374eaff012355d12328e7007bd6e0771be2f913b819b47e7b2cd4836bbe92e5dbf180f1
-Description: Signed kernel image generic
- A link to the debugging symbols for the generic signed kernel.
-Description-md5: a174fcc60d8acc9d04d4d2bb51958dba</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size18">디버깅 유틸 설치</p>
-<ul style="list-style-type: disc;" data-ke-list-type="disc">
-<li>crash 업데이트</li>
-</ul>
-<p data-ke-size="size16">crash 유틸리티의 버전이 최신 커널과 호환되지 않기 때문에 crash 버전을 업데이트 해줘야한다.<br /><br />crash는 커널 덤프를 분석하는 유틸리티로, 커널의 내부 상태를 확인하고 디버깅하는 데 사용된다. 그러나 커널이 업데이트되면서 구조체의 멤버나 내부 동작이 변경될 수 있기때문에 crash도 최신 커널과 호환되도록 유지해야 한다.</p>
-<pre id="code_1713705528593" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>-- crash 빌드전에, 의존성 패키지 설치
-$ apt-get install g++ texinfo bison zlib1g-dev ncurses-dev
-
-$ git clone https://github.com/crash-utility/crash.git
-$ cd crash
-$ git checkout 8.0.2
-$ make
-$ make install
-
-$ crash --version
-crash 8.0.2</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<ul style="list-style-type: disc;" data-ke-list-type="disc">
-<li>pwndbg 설치</li>
-</ul>
-<pre id="code_1713705487876" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>git clone https://github.com/pwndbg/pwndbg
-cd pwndbg
-sh setup.sh</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size18">VMware 가상 머신에서 게스트 OS의 디버깅 활성화</p>
-<pre id="code_1713705390142" class="bash" data-ke-language="bash" data-ke-type="codeblock"><code>debugStub.listen.guest64 ="TRUE"
-debugStub.listen.guest64.remote = "TRUE"
-debugStub.hideBreakpoints = "TRUE"
-debugStub.port.guest64 = "55555"
-monitor.debugOnStartGuest64 = "TRUE"</code></pre>
-<p data-ke-size="size16">&nbsp;</p>
-<p data-ke-size="size16">&nbsp;</p>
-<h2 data-ke-size="size26">References</h2>
-<ul style="list-style-type: disc;" data-ke-list-type="disc">
-<li><a href="https://pulsesecurity.co.nz/articles/docker-rootkits" target="_blank" rel="noopener&nbsp;noreferrer">https://pulsesecurity.co.nz/articles/docker-rootkits</a></li>
-<li><a href="https://man7.org/linux/man-pages/man2/unshare.2.html" target="_blank" rel="noopener&nbsp;noreferrer">https://man7.org/linux/man-pages/man2/unshare.2.html</a></li>
-</ul>
+보통의 hypervisor는 os 나 커널 기반으로 올라가지만 컨테이너는 파일 시스템의 가상화로 호스트의 커널을 공유한다.
+	
+cgroup(control group)은 프로세스들이 사용하는 시스템 자원을 수집, 제한한다.
+namespace는 리눅스 커널에서 프로세스 자원을 격리한다.
+</pre>
+</body>
+</html>
