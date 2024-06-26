@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+    body {
+      color: #FEFEFE;
+      background-color: #0A0B11;
+      margin: 0 auto;
+      padding: 1em 0 1em 0;
+    }
+    a { 
+      color: #93ffd7;
+      text-decoration: none; 
+    }
+    @font-face { 
+      font-family: "unifont"; 
+      src: url("./unifont.woff") format('woff'); 
+    }
+    pre { 
+      font-family: "unifont", "Lucida Console", monospace, Monaco; 
+      font-size:16px; 
+      line-height: 1.0;
+      padding-left: 20px;
+    }
+    .txtdiv {
+      display: block;
+      text-align: left;
+    }
+    </style>
+    <title>jc3wrld999</title>
+</head>
+<body>
+이 예제소스는 BPF(Berkeley Packet Filter) code 를 이용한 내 Linux box 의 모든 TCP syn packet 인입을 잡아내는 Application side에서의 감시코드입니다.
+최신 커널은 eBPF 등 훨씬 강력한 필터를 만들 수 있으나 본 예제는 이에 대한 이해를 도모하기 위한 관점에서 작성하였습니다.
+참고링크 : http://en.wikipedia.org/wiki/Berkeley_Packet_Filter
+하나의 BPF 는 크게 4가지 요소를 담고 있으며 첫번째 요소 16bits는 OP-CODE이고 두번째 요소 8bits 는 True 조건일 때 분기 Offset, 세번째 요소의 8bits False 조건일 때 분기 Offset, 그리고 마지막 요소 32bits 는 OP-CODE에 따른 특정 값을 넘겨줘야 할 때 사용합니다.
+OP-CODE 나 sock_filter 자료구조는 "linux/filter.h" 헤더를 참고하면 이해하기 쉽습니다.
+
+BPF 예1) ICMPv4 reply packet 중 특정 ident 값만 통과시키는 filter 예시 (이 경우 IPv4 header 를 건너뛰는 부분 포함)
+
+              struct sock_filter s_bpf_code[] = { /* ident 가 다르거나 ICMP_ECHOREPLY 가 아닌 경우 버림 */
+                BPF_STMT(BPF_LDX | BPF_B   | BPF_MSH, 0),          /* Skip IP header due BSD, see ping6. */
+                BPF_STMT(BPF_LD  | BPF_H   | BPF_IND, 4),          /* Load icmp echo ident */
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0xAAAA, 1, 0), /* Ours? */
+                BPF_STMT(BPF_RET | BPF_K, 0),                      /* Echo with wrong ident. Reject. */
+                BPF_STMT(BPF_LD  | BPF_B   | BPF_IND, 0),          /* Load icmp type */
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP_ECHOREPLY, 0, 1), /* Echo? */
+                BPF_STMT(BPF_RET | BPF_K, ~0U),                    /* Yes, it passes. */
+                BPF_STMT(BPF_RET | BPF_K, 0)                       /* Echo with wrong reply. Reject. */
+            };
+
+BPF 예2) ICMPv6 reply packet 중 특정 ident 값만 통과시키는 filter 예시
+
+            struct sock_filter s_bpf_code[] = { /* ident 가 다르거나 ICMP6_ECHO_REPLY 가 아닌 경우 버림 */
+                BPF_STMT(BPF_LD  | BPF_H   | BPF_ABS, 4),          /* Load icmp echo ident */
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0xAAAA, 1, 0), /* Ours? */
+                BPF_STMT(BPF_RET | BPF_K, 0),                      /* Echo with wrong ident. Reject. */
+                BPF_STMT(BPF_LD  | BPF_B   | BPF_ABS, 0),          /* Load icmp type */
+                BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP6_ECHO_REPLY, 0, 1), /* Echo? */
+                BPF_STMT(BPF_RET | BPF_K, ~0U),                    /* Yes, it passes. */
+                BPF_STMT(BPF_RET | BPF_K, 0)                       /* Echo with wrong reply. Reject. */
+            };
+
+/*
+  Copyright (C) HWPORT.COM
+  All rights reserved.
+  Code by JaeHyuk Cho <mailto:minzkn@minzkn.com>
+*/
+
+#if !defined(_ISOC99_SOURCE)
+# define _ISOC99_SOURCE (1L)
+#endif
+
+#if !defined(_GNU_SOURCE)
+# define _GNU_SOURCE (1L)
+#endif
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+#include <arpa/inet.h>
+
+#include <linux/filter.h>
+#include <linux/if_ether.h>
+#include <linux/if.h>
+
+int main(int s_argc, char **s_argv);
+
+static void * (__mz_dump_ex__)(size_t s_s, size_t s_d, void * s_da, size_t s_si)
+{ size_t s_o, s_w, s_lo; unsigned char s_b[ 16 + 1 ];
+ if(s_da == NULL)return(NULL);
+ s_b[sizeof(s_b) - 1] = (unsigned char)'\0';
+ for(s_o = (size_t)0;s_o < s_si;s_o += (size_t)16){
+  s_w = ((s_si - s_o) <= ((size_t)16)) ? (s_si - s_o) : ((size_t)16);
+  (void)fprintf(stdout, "%08lX", (unsigned long)(s_d + s_o));
+  for(s_lo = (size_t)0;s_lo < s_w;s_lo++){
+   if(s_lo == ((size_t)(16 >> 1)))(void)fputs(" | ", stdout);
+   else (void)fputs(" ", stdout);
+   s_b[s_lo] = *(((unsigned char *)s_da) + (s_s + s_o + s_lo));
+   (void)fprintf(stdout, "%02X", (int)s_b[s_lo]);
+   if((s_b[s_lo] & ((unsigned char)(1 << 7))) || (s_b[s_lo] < ((unsigned char)' ')) ||
+      (s_b[s_lo] == ((unsigned char)0x7f)))s_b[s_lo] = (unsigned char)'.';}
+  while(s_lo < ((size_t)16)){
+   if(s_lo == ((size_t)(16 >> 1)))(void)fputs("     ", stdout);
+   else (void)fputs("   ", stdout);
+   s_b[s_lo] = (unsigned char)' '; s_lo++;}
+  (void)fprintf(stdout, " [%s]\n", (char *)(&s_b[0]));}
+ return(s_da);
+}
+static __inline void * (mz_dump_ex)(size_t s_seek_offset, size_t s_display_offset, void * s_data, size_t s_size)
+{ return(__mz_dump_ex__(s_seek_offset, s_display_offset, s_data, s_size)); }
+#define mz_dump(m_data,m_size) mz_dump_ex((size_t)0,(size_t)0,(void *)(m_data),(size_t)(m_size))
+
+int main(int s_argc, char **s_argv)
+{
+    int s_socket;
+    unsigned char s_buffer[ 64 << 10 ];
+    ssize_t s_recv_bytes;
+# if 1L
+    struct sock_filter s_bpf_code[] = { /* tcpdump -dd 'tcp[tcpflags] & (tcp-syn) != 0' */
+        { 0x28, 0, 0, 0x0000000c },
+        { 0x15, 0, 8, 0x00000800 },
+        { 0x30, 0, 0, 0x00000017 },
+        { 0x15, 0, 6, 0x00000006 },
+        { 0x28, 0, 0, 0x00000014 },
+        { 0x45, 4, 0, 0x00001fff },
+        { 0xb1, 0, 0, 0x0000000e },
+        { 0x50, 0, 0, 0x0000001b },
+        { 0x45, 0, 1, 0x00000002 },
+        { 0x6, 0, 0, 0x0000ffff },
+        { 0x6, 0, 0, 0x00000000 },
+    };
+# else
+    struct sock_filter s_bpf_code[] = { /* tcpdump -dd tcp */
+        { 0x28, 0, 0, 0x0000000c },
+        { 0x15, 0, 2, 0x000086dd },
+        { 0x30, 0, 0, 0x00000014 },
+        { 0x15, 3, 4, 0x00000006 },
+        { 0x15, 0, 3, 0x00000800 },
+        { 0x30, 0, 0, 0x00000017 },
+        { 0x15, 0, 1, 0x00000006 },
+        { 0x6, 0, 0, 0x00000800 },
+        { 0x6, 0, 0, 0x00000000 }
+    };
+# endif
+    struct sock_fprog s_filter;
+    int s_check;
+
+    (void)s_argc;
+    (void)s_argv;
+
+    s_socket = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_IP));
+    if(s_socket == (-1)) {
+        perror("socket");
+        return(EXIT_FAILURE);
+    }
+
+    s_filter.len = sizeof(s_bpf_code) / sizeof(struct sock_filter);
+    s_filter.filter = s_bpf_code;
+    s_check = setsockopt(s_socket, SOL_SOCKET, SO_ATTACH_FILTER, (const void *)(&s_filter), (socklen_t)sizeof(s_filter));
+    (void)s_check;
+
+    for(;;) {
+        s_recv_bytes = recv(s_socket, (void *)(&s_buffer[0]), sizeof(s_buffer), 0);
+        if(s_recv_bytes == ((ssize_t)(-1))) {
+            perror("recv");
+            break;
+        }
+
+        (void)fprintf(stdout, "recv %ld bytes\n", (long)s_recv_bytes);
+        mz_dump(s_buffer, s_recv_bytes);
+    }
+
+    (void)close(s_socket);
+
+    return(EXIT_SUCCESS);
+}
+
+/* vim: set expandtab: */
+/* End of source */
+
