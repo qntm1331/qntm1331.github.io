@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+    body {
+      color: #FEFEFE;
+      background-color: #0A0B11;
+      margin: 0 auto;
+      padding: 1em 0 1em 0;
+    }
+    a { 
+      color: #93ffd7;
+      text-decoration: none; 
+    }
+    @font-face { 
+      font-family: "unifont"; 
+      src: url("./unifont.woff") format('woff'); 
+    }
+    pre { 
+      font-family: "unifont", "Lucida Console", monospace, Monaco; 
+      font-size:16px; 
+      line-height: 1.0;
+      padding-left: 20px;
+    }
+    .txtdiv {
+      display: block;
+      text-align: left;
+    }
+    </style>
+    <title>jc3wrld999</title>
+</head>
+<body>
+  #include "openssl/conf.h"
+#include "openssl/engine.h"
+#include "openssl/evp.h"
+#include "openssl/bio.h"
+#include "openssl/ssl.h"
+#include "openssl/err.h"
+#include "openssl/pem.h"
+#include "openssl/x509.h"
+#include "openssl/x509_vfy.h"
+
+#include "openssl/modes.h"
+#include "openssl/aes.h"
+
+#include "openssl/md5.h"
+
+#include "openssl/hmac.h"
+
+ssize_t hwport_encrypt_AES_GCM(const EVP_CIPHER *s_cipher, const void *s_plaintext, size_t s_plaintext_size, const void *s_aad, size_t s_aad_size, const void *s_key, const void *s_iv, size_t s_iv_size, void *s_ciphertext, void *s_tag)
+{
+        EVP_CIPHER_CTX *s_evp_cipher_ctx;
+        int s_check;
+        int s_size;
+        ssize_t s_ciphertext_size;
+
+        s_evp_cipher_ctx = EVP_CIPHER_CTX_new();
+        if(s_evp_cipher_ctx == ((EVP_CIPHER_CTX *)0)) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_CIPHER_CTX_new failed !\n");
+                errno = ENOMEM;
+                return((ssize_t)(-1));
+        }
+
+        if(s_cipher == ((const EVP_CIPHER *)0)) {
+                s_cipher = EVP_aes_256_gcm();
+        }
+        s_check = EVP_EncryptInit_ex(
+                s_evp_cipher_ctx /* ctx */,
+                s_cipher /* cipher */,
+                (ENGINE *)0 /* engine */,
+                (const unsigned char *)0 /* key */,
+                (const unsigned char *)0 /* iv */
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_EncryptInit_ex failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        /* Set IV length if default 12 bytes (96 bits) is not appropriate */
+        s_check = EVP_CIPHER_CTX_ctrl(
+                s_evp_cipher_ctx,
+                EVP_CTRL_GCM_SET_IVLEN,
+                (int)s_iv_size,
+                (void *)0
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_CIPHER_CTX_ctrl failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        /* Initialise key and IV */
+        s_check = EVP_EncryptInit_ex(
+                s_evp_cipher_ctx /* ctx */,
+                (const EVP_CIPHER *)0 /* cipher */,
+                (ENGINE *)0 /* engine */,
+                (const unsigned char *)s_key /* key */,
+                (const unsigned char *)s_iv /* iv */
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_EncryptInit_ex failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        if((s_aad == ((const void *)0)) && (s_aad_size <= ((size_t)0u))) {
+                static const uint8_t cg_empty[] = {};
+                s_aad = (const void *)(&cg_empty[0]);
+        }
+        /* Provide any AAD data. This can be called zero or more times as
+         * required
+         */
+        s_check = EVP_EncryptUpdate(
+                s_evp_cipher_ctx,
+                (unsigned char *)0,
+                (int *)(&s_size),
+                (const unsigned char *)s_aad,
+                (int)s_aad_size
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_EncryptUpdate failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        /* Provide the message to be encrypted, and obtain the encrypted output.
+         * EVP_EncryptUpdate can be called multiple times if necessary
+         */
+        s_check = EVP_EncryptUpdate(
+                s_evp_cipher_ctx,
+                (unsigned char *)s_ciphertext,
+                (int *)(&s_size),
+                (const unsigned char *)s_plaintext,
+                (int)s_plaintext_size
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_EncryptUpdate failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+        s_ciphertext_size = (ssize_t)s_size;
+
+        /* Finalise the encryption. Normally ciphertext bytes may be written at
+         * this stage, but this does not occur in GCM mode
+         */
+        s_check = EVP_EncryptFinal_ex(
+                s_evp_cipher_ctx,
+                ((unsigned char *)s_ciphertext) + s_size,
+                (int *)(&s_size)
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_EncryptFinal_ex failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+        s_ciphertext_size += (ssize_t)s_size;
+
+        /* Get the tag */
+        s_check = EVP_CIPHER_CTX_ctrl(
+                s_evp_cipher_ctx,
+                EVP_CTRL_GCM_GET_TAG,
+                16,
+                (void *)s_tag
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_CIPHER_CTX_ctrl failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        EVP_CIPHER_CTX_cleanup(s_evp_cipher_ctx);
+        EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+
+        return(s_ciphertext_size);
+}
+
+ssize_t hwport_decrypt_AES_GCM(const EVP_CIPHER *s_cipher, const void *s_ciphertext, size_t s_ciphertext_size, const void *s_aad, size_t s_aad_size, const void *s_tag, const void *s_key, const void *s_iv, size_t s_iv_size, void *s_plaintext)
+{
+        union {
+                const void *m_const_ptr;
+                void *m_ptr;
+        }s_union_ptr;
+        EVP_CIPHER_CTX *s_evp_cipher_ctx;
+        int s_check;
+        int s_size;
+        ssize_t s_plaintext_size;
+
+        s_evp_cipher_ctx = EVP_CIPHER_CTX_new();
+        if(s_evp_cipher_ctx == ((EVP_CIPHER_CTX *)0)) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_CIPHER_CTX_new failed !\n");
+                errno = ENOMEM;
+                return((ssize_t)(-1));
+        }
+
+        if(s_cipher == ((const EVP_CIPHER *)0)) {
+                s_cipher = EVP_aes_128_gcm();
+        }
+        s_check = EVP_DecryptInit_ex(
+                s_evp_cipher_ctx /* ctx */,
+                s_cipher /* cipher */,
+                (ENGINE *)0 /* engine */,
+                (const unsigned char *)0 /* key */,
+                (const unsigned char *)0 /* iv */
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_DecryptInit_ex failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        /* Set IV length. Not necessary if this is 12 bytes (96 bits) */
+        s_check = EVP_CIPHER_CTX_ctrl(
+                s_evp_cipher_ctx,
+                EVP_CTRL_GCM_SET_IVLEN,
+                (int)s_iv_size,
+                (void *)0
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_CIPHER_CTX_ctrl failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        /* Initialise key and IV */
+        s_check = EVP_DecryptInit_ex(
+                s_evp_cipher_ctx /* ctx */,
+                (const EVP_CIPHER *)0 /* cipher */,
+                (ENGINE *)0 /* engine */,
+                (const unsigned char *)s_key /* key */,
+                (const unsigned char *)s_iv /* iv */
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_DecryptInit_ex failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        if((s_aad == ((const void *)0)) && (s_aad_size <= ((size_t)0u))) {
+                static const uint8_t cg_empty[] = {};
+                s_aad = (const void *)(&cg_empty[0]);
+        }
+        /* Provide any AAD data. This can be called zero or more times as
+         * required
+         */
+        s_check = EVP_DecryptUpdate(
+                s_evp_cipher_ctx,
+                (unsigned char *)0,
+                (int *)(&s_size),
+                (const unsigned char *)s_aad,
+                (int)s_aad_size
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_DecryptUpdate failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        /* Provide the message to be decrypted, and obtain the plaintext output.
+         * EVP_DecryptUpdate can be called multiple times if necessary
+         */
+        s_check = EVP_DecryptUpdate(
+                s_evp_cipher_ctx,
+                (unsigned char *)s_plaintext,
+                (int *)(&s_size),
+                (const unsigned char *)s_ciphertext,
+                (int)s_ciphertext_size
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_DecryptUpdate failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+        s_plaintext_size = (ssize_t)s_size;
+
+        /* Set expected tag value. Works in OpenSSL 1.0.1d and later */
+        s_union_ptr.m_const_ptr = s_tag;
+        s_check = EVP_CIPHER_CTX_ctrl(
+                s_evp_cipher_ctx,
+                EVP_CTRL_GCM_SET_TAG,
+                16,
+                (void *)s_union_ptr.m_ptr
+        );
+        if(s_check <= 0) {
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_CIPHER_CTX_ctrl failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+
+        /* Finalise the decryption. A positive return value indicates success,
+         * anything else is a failure - the plaintext is not trustworthy.
+         */
+        s_check = EVP_DecryptFinal_ex(
+                s_evp_cipher_ctx,
+                ((unsigned char *)s_plaintext) + s_size,
+                (int *)(&s_size)
+        );
+        if(s_check <= 0) { /* Verify failed */
+                ERR_print_errors_fp(stderr);
+                (void)fprintf(stderr, "EVP_EncryptFinal_ex failed !\n");
+                EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+                errno = EINVAL;
+                return((ssize_t)(-1));
+        }
+        else {
+                s_plaintext_size += (ssize_t)s_size;
+        }
+
+        EVP_CIPHER_CTX_cleanup(s_evp_cipher_ctx);
+        EVP_CIPHER_CTX_free(s_evp_cipher_ctx);
+
+        return(s_plaintext_size);
+}
+
+        </body>
+        </html>
