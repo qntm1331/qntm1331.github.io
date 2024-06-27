@@ -1,0 +1,28 @@
+RFC7348 - Virtual eXtensible Local Area Network (VXLAN): A Framework for Overlaying Virtualized Layer 2 Networks over Layer 3 Networks
+https://www.cisco.com/c/ko_kr/support/docs/switches/nexus-9000-series-switches/118978-config-vxlan-00.html
+https://en.wikipedia.org/wiki/Virtual_Extensible_LAN
+https://en.wikipedia.org/wiki/Overlay_network
+https://skstp35.tistory.com/227
+https://www.arubanetworks.com/ko/faq/what-is-evpn-vxlan/
+https://www.juniper.net/kr/ko/research-topics/what-is-vxlan.html
+https://support.huawei.com/enterprise/en/doc/EDOC1100086966
+https://atthis.tistory.com/6
+https://object-storage-ca-ymq-1.vexxhost.net/swift/v1/6e4619c416ff4bd19e1c087f27a43eea/www-assets-prod/presentation-media/OpenStackOverVxlan.pdf
+http://www.definethecloud.net/vxlan-deep-dive/], [^https://www.definethecloud.net/vxlan-deep-divepart-2/
+https://ikcoo.tistory.com/117
+블로그 - 네트워크&파이썬 (white-polarbear)
+https://white-polarbear.tistory.com/69
+Overlay Network & Underlay Network (오버레이, 언더레이)
+https://white-polarbear.tistory.com/83
+VXLAN (Virtual eXtention LAN) 기술 소개
+https://white-polarbear.tistory.com/84
+VXLAN (Virtual eXtention LAN) 네트워크 모델
+https://white-polarbear.tistory.com/85
+VXLAN (Virtual eXtention LAN) MAC 주소 학습 방법
+https://white-polarbear.tistory.com/86
+VXLAN (Virtual eXtention LAN) Gateway 소개
+https://white-polarbear.tistory.com/87
+VXLAN (Virtual eXtention LAN) High Availability 소개
+https://vincent.bernat.ch/en/blog/2017-vxlan-linux
+https://blog.naver.com/PostView.nhn?blogId=lunaeye&logNo=221160549927&parentCategoryNo=&categoryNo=1&viewDate=&isShowPopularPosts=false&from=postView
+https://www.joinc.co.kr/w/man/12/OpenVSwitch/VXLAN
