@@ -1,0 +1,827 @@
+
+
+
+XDP (eXpress Data Path)는 Linux Kernel v4.8부터 merge 된 ( 새로운 Address family 정의 AF_XDP의 경우 Linux Kernel v4.18부터 merge ) eBPF 기반 고성능 Data 경로 (Programmable 가능한 Network Data Path) 입니다.
+
+cBPF (Classic BPF)는 1992년 부터 존재하였으나 이는 구식으로 취급되며 eBPF (Extended Berkeley Packet Filter)는 Linux Kernel v3.18 부터 등장하였습니다. 현재는 cBPF 도 내부적으로 eBPF로 투명하게 변환되어 처리됩니다. eBPF로 작성된 프로그램을 "bpf() / ebpf()" 시스템 콜을 통해서 Kernel에 전달하면 Kernel내에서 Sandbox형태의 인터프리터 ( Interpreter : JIT virtual machine )로 동작하게 됩니다.
+
+많은 분들이 Linux Kernel을 사용하는 환경에서 네트워킹 속도를 높이기 위해 수 많은 조사 (Zero copy, Context overhead, ...) 와 방안들(netmap, DPDK , PF_ring, manglev, Onload, Snabb, ...)을 강구해왔습니다.
+
+그 방안들 중에서 하나인 DPDK 의 경우는 커널에서 네트워킹을 제거하고 사용자 영역에서 이를 처리하도록 하여 속도면에서는 이것을 어느정도 달성하게 되었으나 사용자 영역에서 커널에서 하던 수 많은 네트워킹 처리를 다시 구현해야 하는 문제로 모든 환경에 부합시키기는 골치아픈 문제가 있었습니다.
+
+이제 여기서 다루는 XDP (eXpress Data Path) 라고 하는 사용자 영역 네트워킹의 대안을 제시하는 시점까지 왔으며 커널의 이점과 더 빠른 패킷 처리 간의 균형을 맞추는 방안 으로써 자리를 잡고 있습니다.
+
+핵심만 요약한다면 Kernel에서 XDP 프로그램은 "struct sk_buff" 를 만들기도 전에 실행될 수 있습니다. "ip link set dev ... xdp ..." 와 같은 명령을 통해서 NIC장치에 이러한 XDP 프로그램을 붙이기 때문입니다. 여기서 장치 드라이버에서 XDP 지원이 구현돼 있으면 수신 루틴 초입 (i40 driver의 경우 "i40e_run_xdp(rx_ring, &xdp)") 에서 프로그램을 실행하고 아니면 좀 더 위에서 실행 ("do_xdp_generic(rcu_dereference(skb->dev->xdp_prog), skb);")한다고 이해하면 됩니다.
+
+기본적으로 libbpf 를 사용하여 BPF 프로그램을 만들고 이를 Kernel로 load 하도록 만드는 것에서부터 시작합니다.
+
+BPF 프로그램은 제한적인 C로 작성된 프로그램을 LLVM + clang 으로 컴파일하여 ELF object file에 BPF byte code로 저장된 형태를 만들게 되며 이것을 bpf 시스템콜 (syscall) 을 통하여 Kernel에 load 하여 실행하게 됩니다. 그리고 필요에 따라서 perf 유틸리티를 통하여 Kernel의 동작들을 추적할 수 있습니다.
+
+LLVM + Clang (+ libelf + libpcap + ...) 환경은 주요 배포판에서 다음과 같이 패키지를 설치할 수 있습니다. 또한 자신의 타겟 실행 환경이 개발환경과 같거나 다른 경우등의 조건에 따라서 Kernel headers, bpftool , perf 등을 설치할 수 있습니다. ( 참고: https://github.com/xdp-project/xdp-tutorial/blob/master/setup_dependencies.org )
+
+
+Fedora 환경인 경우
+$ sudo dnf install clang llvm
+$ sudo dnf install elfutils-libelf-devel libpcap-devel
+Kernel headers 설치 (타겟 커널이 다른 경우 해당 커널의 헤더를 사용, 선택사항)
+$ sudo dnf install kernel-headers
+bpftool 설치 (선택사항)
+$ sudo dnf install bpftool
+perf 유틸리티 설치 (선택사항)
+$ sudo dnf install perf
+Debian / Ubuntu 환경인 경우
+$ sudo apt install clang llvm
+$ sudo apt install libelf-dev libpcap-dev gcc-multilib build-essential
+Kernel headers 설치 (타겟 커널이 다른 경우 해당 커널의 헤더를 사용, 선택사항)
+$ sudo apt install linux-headers-$(uname -r)
+bpftool 설치 (선택사항)
+Ubuntu 환경인 경우
+$ sudo apt install linux-tools-common linux-tools-generic
+perf 유틸리티 설치 (선택사항)
+Debian 환경인 경우
+$ sudo apt install linux-perf
+Ubuntu 환경인 경우
+$ sudo apt install linux-tools-$(uname -r)
+openSUSE 환경인 경우
+$ sudo zypper install clang llvm
+$ sudo zypper install libelf-devel libpcap-devel
+Kernel headers 설치 (타겟 커널이 다른 경우 해당 커널의 헤더를 사용, 선택사항)
+$ sudo zypper install kernel-devel
+bpftool 설치 (선택사항)
+$ sudo zypper install bpftool
+perf 유틸리티 설치 (선택사항)
+$ sudo zypper install perf
+그 밖에 추가적으로 개발하고자 하는 환경에 따라서 다음과 같은 패키지를 추가 설치해야 할 수 있습니다.
+Ubuntu 환경인 경우
+$ sudo apt install autoconf automake m4
+$ sudo apt install pkg-config
+$ sudo apt install libtool
+$ sudo apt install cmake
+$ sudo apt install kernel-package
+$ sudo apt install iproute2
+$ sudo apt install dwarves
+...
+또한 Ubuntu 환경에서 특정 커널버젼에 맞는 개발환경으로 설치하기 위해서는 다음과 같이 할 수 있습니다. (전체적인 bpf 기능을 위해서는 Linux Kernel v5.10 이상과 libbpf v0.7.0 이상을 사용하시는 것이 좋을거 같다는 개인적인 의견입니다.)
+
+sudo add-apt-repository ppa:cappelikan/ppa
+sudo apt install mainline
+sudo mainline --list
+sudo mainline --install <version string>
+eBPF 예제 프로그램을 빌드하는 방법 예시
+eBPF 프로그램 간단한 예제 소스 ("xdp-test.c")
+/* SPDX-License-Identifier: GPL-2.0 */
+#include <linux/bpf.h>
+#if 0L /* libbpf header 가 참조가능한 환경인 경우 */
+#include <bpf/bpf_helpers.h>
+#else /* no libbpf header */
+# if !defined(SEC)
+#  define SEC(name) \
+        _Pragma("GCC diagnostic push")                                      \
+        _Pragma("GCC diagnostic ignored \"-Wignored-attributes\"")          \
+        __attribute__((section(name), used))                                \
+        _Pragma("GCC diagnostic pop")                                       \
+
+# endif
+#endif
+
+SEC("prog")
+int  xdp_pass_func(struct xdp_md *ctx)
+{
+                return XDP_PASS;
+}
+
+char _license[] SEC("license") = "GPL"; /* license 지정이 GPL인 경우와 아닌 경우에 따라서 사용할 수 있는 helpers 함수와 기능에 차이가 있을 수 있음 */
+Clang+LLVM 으로 컴파일 및 링크 예시 (libbpf library 및 header 는 "git clone https://github.com/xdp-project/libbpf.git" 으로 받을 수 있습니다.)
+$ clang -target bpf -I "<libbpf의 header 위치>" -emit-llvm -c -o xdp-test.ll xdp-test.c
+$ llc -march bpf -filetype obj -o xdp-test.o xdp-test.ll
+eBPF 프로그램을 지정한 인터페이스에 로드&실행 (xdp-tools 는 "git clone https://github.com/xdp-project/xdp-tools.git" 으로 받을 수 있습니다.)
+$ sudo ip link set dev "<인터페이스명>" xdp object xdp-test.o section "<section명>" verbose
+
+또는 xdp-tools 를 받아서 설치한 환경인 경우
+
+$ sudo xdp-loader load --verbose --mode native --section "<section명>" "<인터페이스명>" xdp-test.o
+container 기반에서 실행하려면 CAP_SYS_ADMIN or CAP_BPF(v5.8 이상), CAP_NET_ADMIN 권한이 필요하며 "/sys/kernel/debug", "/sys/fs/cgroup", "/sys/fs/bpf" ("mount bpffs /sys/fs/bpf -t bpf") 등에 대한 volume mapping과 privileged(=true) 권한등의 부여가 필요합니다.
+일반 linux 환경에서 root 권한 없이도 일반 유저권한(non-root)으로 사용할 수 있도록 하려면 sysctl 의 kernel.unprivileged_bpf_disabled 을 변경해야 합니다.
+eBPF 프로그램 로드 확인
+$ sudo ip link show dev "<인터페이스명>" 
+<ifindex>: <인터페이스명>: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 xdp qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+    link/ether 52:54:00:a8:c3:19 brd ff:ff:ff:ff:ff:ff
+    prog/xdp id 19 tag b8a375b5b20c0074 jited
+
+또는 xdp-tools 를 받아서 설치한 환경인 경우
+
+$ sudo xdp-loader status "<인터페이스명>" 
+CURRENT XDP PROGRAM STATUS:
+
+Interface        Prio  Program name      Mode     ID   Tag               Chain actions
+--------------------------------------------------------------------------------------
+<인터페이스명>                                   native   19   b8a375b5b20c0074
+eBPF 프로그램 제거
+$ sudo ip link set dev "<인터페이스명>" xdp off
+
+또는 xdp-tools 를 받아서 설치한 환경인 경우
+
+$ sudo xdp-loader unload --all --verbose "<인터페이스명>" 
+eBPF 프로그램에서 bpf_trace_printk(fmt, fmt_size, ...) helper 함수로 특정 디버깅 메세지를 출력하도록 작성하면 해당 출력 메세지는 "/sys/kernel/debug/tracing/trace_pipe" 에서 확인할 수 있게 됩니다.
+$ sudo cat /sys/kernel/debug/tracing/trace_pipe
+eBPF 프로그램으로 만들어진 elf 파일에 대한 세부 정보나 역 어셈블 확인을 위해서는 readelf 명령과 llvm-objdump 등을 통해서 확인 가능합니다.
+$ readelf -a "<XDP program elf object>" 
+$ llvm -D "<XDP program elf object>" 
+BPF : cBPF (Classic BPF) / eBPF (Extended Berkeley Packet Filter)
+cBPF(Classic BPF)는 1992년 부터 존재하였으나 이는 구식으로 취급되며 eBPF는 Linux Kernel v3.18 부터 등장하였습니다. 현재는 cBPF 도 내부적으로 eBPF로 투명하게 변환되어 처리됩니다.
+
+cBPF는 tcpdump 및 일부 ping 명령어에서 사용하는 패킷 필터 언어로 알려져 있습니다. 이 문서는 특별히 cBPF에만 해당하는 경우 cBPF하는 용어를 사용하고 나머지는 BPF라는 용어를 사용하겠습니다.
+
+BPF ArchitectureBPF는 명령어 세트 (instruction set)만을 제공하고 그에 대한 구현을 정의하지 않으며 다음과 같은 하부구조를 가집니다.
+효율적인 "키 / 값 저장소 (key / value stores)" 역할을 하는 맵(map)
+Kernel 기능과 상호 작용하고 활용하기 위한 "도우미 함수 (helper functions)"
+다른 BPF 프로그램 호출을 위한 "후속/연쇄 호출 (tail calls)"
+보안 강화를 위한 기반요소
+Objects(map, program) 들을 고정(pinning)하기 위한 의사 파일 시스템(pseudo file system)
+NIC등에서 BPF를 offload 하기 위한 구조
+LLVM은 BPF backend를 제공하므로 Clang과 같은 Frontend 도구를 사용하여 C로 작성된 source를 BPF object 파일로 Compile한 다음 Kernel에 load할 수 있습니다. 이를 통하여 Linux Kernel의 기본 성능을 희생하지 않으면서 프로그래밍 가능성을 허용할 수 있게 됩니다.
+
+Kernel의 하위 시스템도 이러한 BPF의 하부구조에 일부라고 할 수 있습니다. 여기서 BPF 프로그램을 연결할 수 있는 "XDP BPF"와 "tc BPF" 가 있습니다. 이 두가지는 다음과 같은 특성을 갖습니다.
+
+"XDP BPF"
+수신된 packet이 있을 때 가장 빠른 위치에서 실행됩니다. 때문에 최고의 패킷 처리 성능을 달성할 수 있는 가능성을 제공합니다.
+그러나 Network stack보다 일찍 발생하므로 Kernel의 Network stack을 통한 정보나 가공등이 이루어지지 않은 상태의 packet을 다루어야 합니다.
+"tc BPF"
+Network stack에서 실행되므로 더 많은 정보와 가공등이 처리되고 Kernel의 주요 기능에 접근할 수 있습니다.
+BPF 명령어 세트 (BPF instruction set)
+BPF는 범용 RISC 명령어 세트이며 Compiler backend(예: LLVM)를 통해 BPF 명령어로 Compile될 수 있는 C의 하위 집합으로 프로그램을 작성하기 위해 설계되었습니다. Kernel은 내부 JIT compiler를 통해 최적의 실행 성능을 위해 Native opcode에 대응할 수 있습니다.
+
+BPF 명령을 Kernel에서 실행하는데 있어서 이점은 다음과 같습니다.
+Kernel과 User의 공간에 대한 경계를 넘지 않으면서 map [1] 을 공유할 수 있습니다. 즉, Packet을 User공간으로 이동하고 이를 다시 Kernel로 이동하는 경우가 없는 Container 정책을 달성할 수 있습니다.
+프로그램이 가능한 Data 경로 유연성에 의해서 꼭 필요한 사항만 빌드해서 성능의 최적화를 크게 달성할 수 있습니다.
+Kernel과 서비스 또는 Container들을 다시 시작하지 않고 트래픽 중단상황 없이 BPF 프로그램을 원자적으로 업데이트가 가능합니다. 또한 프로그램의 상태는 BPF map을 통해서 업데이트 전반에 걸쳐 유지시킬 수 있습니다.
+BPF는 사용자 User 공간에 대해서 안정적인 ABI를 제공하며 별도의 타사 Kernel 모듈들이 필요하지 않습니다. 그리고 BPF 프로그램이 최신 Kernel version에서도 계속 실행될 수 있음이 보장되며 다양한 Architecture에 이식이 가능합니다.
+BPF 프로그램은 기존 Kernel의 하부구조 (Driver, Netdevices, Tunnel, Protocol stack, Socket, ...) 및 도구(iproute2, ...)의 안정성을 사용하며 Kernel 충돌 및 중단등을 방지하기 위하여 내부 검증루틴을 통과하도록 되어 있습니다. BPF프로그램은 Kernel 기능에 대한 일반적인 '접착 코드 (glue code)'로써 여러가지 경우를 해결할 수 있습니다.
+Kernel 내부의 BPF 프로그램 실행은 항상 Event 기반입니다. 예를 들면...
+NIC에 추가된 BPF 프로그램이 있으면 Packet이 수신되었을 때 BPF 프로그램이 실행됩니다.
+BPF 프로그램이 추가되고 kprobe가 있는 Kernel주소를 실행할 때 kprobe의 콜백 함수를 호출하고 BPF 프로그램의 실행을 추적합니다.
+
+
+BPF는 32비트 하위 Register, Program counter 및 512 bytes BPF 스택 공간이 있는 11개의 64 bits register (r0 ~ r10) 로 구성됩니다. 작동 모드는 기본적으로 64 bits 이며 32 bits 하위 Register는 특정 ALU 연산을 통해서만 접근할 수 있습니다. 32 bits 하위 Register는 기록될 때 64 bits로 0 확장 (zero extend) 됩니다.
+
+Register r10은 읽기 전용이고 BPF stack 공간에 접근하기 위한 Frame pointer 주소를 갖는 유일한 Register입니다. 나머지 r0 - r9 레지스터는 범용이며 읽기 / 쓰기가 가능합니다.
+
+BPF 프로그램은 기 정의된 Kernel 핵심부의 Helper 함수를 호출(module에서는 안됨)할 수 있으며, BPF 호출 규칙은 다음과 같이 정의됩니다.
+Register r0은 Helper 함수 호출의 반환 값을 가질 수 있습니다.
+BPG 프로그램의 종료 값으로도 이 Register가 사용됩니다. 이 경우 종료 값의 의미는 BPF 프로그램의 유형에 따라서 정의됩니다. 그리고 BPF 프로그램의 종료 값이 Kernel로 반환될 때는 32 bits 값으로 전달됩니다.
+Register r1 ~ r5는 BPF 프로그램에서 Helper 함수로의 인수를 지정할 수 있습니다.
+Scratch register [2] 이기도 합니다. 즉, 이러한 인수를 여러 Helper 함수 호출에서 재사용하려면 BPF 프로그램이 이를 BPF stack으로 이동시키거나 호출자 쪽 저장 Register r6 ~ r9로 이동해야 합니다.
+BPF 프로그램이 실행될 때 Register r1 (첫번째 인수) 은 프로그램의 Context를 처음에 포함합니다. (이것은 마치 일반적인 C 프로그램의 main함수에서 argc/argv 쌍과 유사한 의미입니다.)
+Register r6 ~ r9는 Helper 함수 호출 시 보존되어야 할 호출자 측을 위한 저장용입니다.
+BPF 호출 규칙은 x86_64, arm64 및 기타 ABI에 직접 매핑하기에 일반적으로 충분하며 모든 BPF Register는 H/W CPU Register에 1:1 로 매핑될 수 있으므로 JIT는 호출 명령만 만들면 되고 함수 인수에 대한 배치를 위한 추가적인 이동은 필요하지 않습니다. 이 호출 규칙은 성능 저하 없이 일반적인 호출 상황을 다루도록 모델링되었습니다. 6개 이상의 함수 인수가 있는 호출은 현재 지원되지 않습니다. BPF 전용인 Kernel의 Helper 함수(BPF_CALL_0() ~ BPF_CALL_5() 함수)는 이 규칙을 염두에 두고 특별히 설계되었습니다.
+
+64 bits architecture 에서의 자연스러운 pointer 산술연산을 수행하고 Helper 함수로 64 bits 값을 전달하고 64 bits 원자 연산등을 달성하기 위해서 BPF의 일반적인 동작은 64 bits 입니다.
+
+BPF 프로그램당 최대 명령어 제한은 4096개로 제한되며 이는 설계상 빠르게 종료되도록 작성되어야 함을 의미합니다. (Kernel v5.1 이상부터는 이 제한이 100만개로 해제되었습니다. Kernel에서 BPF_MAXINSNS 및 BPF_COMPLEXITY_LIMIT_INSNS define을 참고) 명령어는 순방향 / 역방향 분기가 포함될 수 있으나 Kernel내 BPF 검증부에서 무한루프를 금지하므로 종료가 보장될 수 있습니다. 이는 Kernel내에서 BPF가 실행되기 때문에 안정성에 영향을 주지 않도록 확인하는 안전장치입니다. 그리고 BPF 프로그램이 다른 프로그램으로 연쇄 호출(BPF tail call : Kernel에서 bpf_tail_call 함수 참고)할 수 있는데 이 경우 33개까지만(Kernel에서 MAX_TAIL_CALL_CNT define 참고) 호출 중첩제한됩니다.
+
+BPF 명령어 형식은 2개의 피연산자 명령어로 모델링되어 JIT 단계에서 native code 로 매핑하게 됩니다. 모든 BPF 명령어 세트는 고정 크기인 64 bits 로 encoding 하며 현재는 총 87개의 명령어가 구현되어 있고 필요시 추가 명령어를 확장할 수 있습니다. 하나의 64 bits BPF 명령어는 Big-endian 장치에서 MSB부터 LSB까지 opcode 8 bits, dst_reg 4bits, src_reg 4 bits, off 16bits, imm 32bits 순으로 정의되며 명령어에 따라서 일부 항목을 사용하지 않는 경우가 있는데 이 경우 해당 항목은 0으로 초기화하여 사용합니다. Encoding 은 eBPF Instruction Set 및 Unofficial eBPF spec 을 참고할 수 있습니다.
+
+BPF 명령어 Encoding
+32 ~ 63 (32 bits) (MSB)	16 ~ 31 (16 bits)	12 ~ 15 (4 bits)	8 ~ 11 (4 bits)	0 ~ 7 (8 bits) (LSB)
+immediate (imm: signed immediate constant)	offset (off: signed offset)	source register (src_reg)	destination register (dst_reg)	opcode
+Linux kernel header : "include/uapi/linux/bpf.h"
+/* Linux kernel header : "include/uapi/linux/bpf.h" */
+struct bpf_insn {
+        __u8    code;           /* opcode */
+        __u8    dst_reg:4;      /* dest register */
+        __u8    src_reg:4;      /* source register */
+        __s16   off;            /* signed offset */
+        __s32   imm;            /* signed immediate constant */
+};
+opcode에서 'Arithmetic and jump instructions' (BPF_ALU, BPF_ALU64, BPF_JMP, BPF_JMP32) 은 다음과 같이 정의됩니다.
+
+opcode: Arithmetic and jump instructions
+4 bits (MSB)	1 bit	3 bits (LSB)
+operation code	source	instruction class
+'Arithmetic instructions' opcode에서 'operation code' 는 다음과 같이 정의됩니다.
+code	값	설명	비고
+BPF_ADD	0x00	dst += src	
+BPF_SUB	0x10	dst -= src	
+BPF_MUL	0x20	dst *= src	
+BPF_DIV	0x30	dst /= src	
+BPF_OR	0x40	dst |= src	
+BPF_AND	0x50	dst &= src	
+BPF_LSH	0x60	dst <<= src	
+BPF_RSH	0x70	dst >>= src	
+BPF_NEG	0x80	dst = ~src	
+BPF_MOD	0x90	dst %= src	
+BPF_XOR	0xa0	dst ^= src	
+BPF_MOV	0xb0	dst = src	mov reg to reg
+BPF_ARSH	0xc0	sign extending shift right	sign extending arithmetic shift right
+BPF_END	0xd0	endianness conversion (flags for endianness conversion)	BPF_TO_LE/BPF_FROM_LE (0x00), BPF_TO_BE/BPF_FROM_BE (0x08)
+'Jump instructions' opcode에서 'operation code' 는 다음과 같이 정의됩니다.
+code	값	설명	비고
+BPF_JA	0x00	PC += off	BPF_JMP only
+BPF_JEQ	0x10	PC += off if dst == src
+BPF_JGT	0x20	PC += off if dst > src	unsigned
+BPF_JGE	0x30	PC += off if dst >= src	unsigned
+BPF_JSET	0x40	PC += off if dst & src	
+BPF_JNE	0x50	PC += off if dst != src	
+BPF_JSGT	0x60	PC += off if dst > src	signed
+BPF_JSGE	0x70	PC += off if dst >= src	signed
+BPF_CALL	0x80	function call	
+BPF_EXIT	0x90	function / program return (return r0)	BPF_JMP only
+BPF_JLT	0xa0	PC += off if dst < src	unsigned
+BPF_JLE	0xb0	PC += off if dst <= src	unsigned
+BPF_JSLT	0xc0	PC += off if dst < src	signed
+BPF_JSLE	0xd0	PC += off if dst <= src	signed
+'Arithmetic and jump instructions' opcode에서 'source' operand ("The 4th bit encodes the source operand") 는 다음과 같이 정의됩니다.
+source	값	설명
+BPF_K	0x00	use 32-bit immediate as source operand
+BPF_X	0x08	use 'src_reg' register as source operand
+opcode에서 'Load and store instructions' (BPF_LD, BPF_LDX, BPF_ST, BPF_STX) 은 다음과 같이 정의됩니다.
+3 bits (MSB)	2 bits	3 bits (LSB)
+mode	size	instruction class
+'Load and store instructions' opcode에서 'size' modifier 는 다음과 같이 정의됩니다.
+size modifier	값	설명
+BPF_W	0x00	word (4 bytes)
+BPF_H	0x08	half word (2 bytes)
+BPF_B	0x10	byte (1 byte)
+BPF_DW	0x18	double word (8 bytes)
+16-byte instructions : eBPF에는 하나의 명령어가 일반적인 8 bytes (64 bits)가 아닌 16 bytes (64 bits x 2)로 구성되는 경우가 있습니다. "BPF_LD | BPF_DW | BPF_IMM" 은 2개의 연속적인 8 bytes (64 bits) 블록으로 구성되며 64 bits immediate 값을 dst_reg에 Load하는 단일 명령어로 해석됩니다.
+'Load and store instructions' opcode에서 'mode' modifier 는 다음과 같이 정의됩니다.
+mode modifier	값	설명
+BPF_IMM	0x00	used for 64-bit mov
+BPF_ABS	0x20	legacy BPF packet access
+BPF_IND	0x40	legacy BPF packet access
+BPF_MEM	0x60	all normal load and store operations
+(reserved)	0x80	reserved
+(reserved)	0xa0	reserved
+BPF_ATOMIC	0xc0	atomic operations (atomic memory ops - op type in immediate)
+opcode의 LSB bit의 'Instruction classes' 는 다음과 같이 정의됩니다.
+class	값	설명	비고
+BPF_LD	0x00	non-standard load operations	Load instructions
+BPF_LDX	0x01	load into register operations	Load instructions
+BPF_ST	0x02	store from immediate operations	Store instructions
+BPF_STX	0x03	store from register operations	Store instructions
+BPF_ALU	0x04	32-bit arithmetic operations	Arithmetic instructions
+BPF_JMP	0x05	64-bit jump operations	Jump instructions
+BPF_JMP32	0x06	32-bit jump operations (Jump mode in word width)	Jump instructions
+BPF_ALU64	0x07	64-bit arithmetic operations (ALU mode in double word width)	Arithmetic instructions
+eBPF는 원자적 연산 (Atomic operations) [3] 을 위해서 opcode가 아닌 immediate 에 추가적인 encoding을 할 수 있습니다. 이 때 immediate에는 기본적으로 BPF_ADD, BPF_AND, BPF_OR, BPF_XOR 를 지원하며 BPF_FETCH (0x01)을 함께 set 하면 src_reg가 수정되기 전에 메모리에 있던 값 (dst_reg + off)으로 덮어씁니다. 그리고 immediate에 BPF_XCHG (0xe0 | BPF_FETCH) 와 BPF_CMPXCHG (0xf0 | BPF_FETCH) 를 사용할 수 있습니다. 현재 1 byte와 2 bytes 원자적 연산은 지원하지 않습니다.
+
+=> "kernel/bpf/core.c" source 에서 ___bpf_prog_run() 함수구현 참고
+
+#define BPF_ATOMIC_OP(SIZE, OP, DST, SRC, OFF)                  \
+        ((struct bpf_insn) {                                    \
+                .code  = BPF_STX | BPF_SIZE(SIZE) | BPF_ATOMIC, \
+                .dst_reg = DST,                                 \
+                .src_reg = SRC,                                 \
+                .off   = OFF,                                   \
+                .imm   = OP })
+
+.imm = BPF_ADD, .code = BPF_ATOMIC | BPF_W  | BPF_STX: lock xadd *(u32 *)(dst_reg + off16) += src_reg
+    BPF_ATOMIC_OP(sizeof(u32), BPF_ADD, <dst_reg>, <src_reg>, <off16>)
+.imm = BPF_ADD, .code = BPF_ATOMIC | BPF_DW | BPF_STX: lock xadd *(u64 *)(dst_reg + off16) += src_reg
+    BPF_ATOMIC_OP(sizeof(u64), BPF_ADD, <dst_reg>, <src_reg>, <off16>)
+Atomic operations: immediate
+immediate	값	설명	비고
+BPF_ADD	0x00	*(uint *) (dst_reg + off16) += src_reg	atomic_add(src_reg, dst_reg + off16)
+BPF_AND	0x50	*(uint *) (dst_reg + off16) &= src_reg	atomic_and(src_reg, dst_reg + off16)
+BPF_OR	0x40	*(uint *) (dst_reg + off16) |= src_reg	atomic_or(src_reg, dst_reg + off16)
+BPF_XOR	0xa0	*(uint *) (dst_reg + off16) ^= src_reg	atomic_xor(src_reg, dst_reg + off16)
+BPF_ADD | BPF_FETCH	0x01 (0x00 | 0x01)	tmp = *(uint *) (dst_reg + off16), *(uint *) (dst_reg + off16) += src_reg, src_reg = tmp	src_reg = atomic_fetch_add(src_reg, dst_reg + off16)
+BPF_AND |BPF_FETCH	0x51 (0x00 | 0x01)	tmp = *(uint *) (dst_reg + off16), *(uint *) (dst_reg + off16) &= src_reg, src_reg = tmp	src_reg = atomic_fetch_and(src_reg, dst_reg + off16)
+BPF_OR | BPF_FETCH	0x41 (0x00 | 0x01)	tmp = *(uint *) (dst_reg + off16), *(uint *) (dst_reg + off16) |= src_reg, src_reg = tmp	src_reg = atomic_fetch_or(src_reg, dst_reg + off16)
+BPF_XOR | BPF_FETCH	0xa1 (0x00 | 0x01)	tmp = *(uint *) (dst_reg + off16), *(uint *) (dst_reg + off16) ^= src_reg, src_reg = tmp	src_reg = atomic_fetch_xor(src_reg, dst_reg + off16)
+BPF_XCHG (0xe0 | BPF_FETCH)	0xe1 (0xe0 | 0x01)	tmp = *(uint *) (dst_reg + off16), *(uint *) (dst_reg + off16) = src_reg, src_reg = tmp	src_reg = atomic_xchg(dst_reg + off16, src_reg)
+BPF_CMPXCHG (0xf0 | BPF_FETCH)	0xf1 (0xf0 | 0x01)	(*(uint *) (dst_reg + off16) == r0) ? *(uint *) (dst_reg + off16) = src_reg : r0 = *(uint *) (dst_reg + off16)	r0 = atomic_cmpxchg(dst_reg + off16, r0, src_reg)
+Packet을 접근하는데 일반적이지 않은 접근 명령어 2가지 "BPF_ABS | <size> | BPF_LD" 와 "BPF_IND | <size> | BPF_LD" 가 있습니다. 이것은 eBPF interpreter에서 실행되는 cBPF가 갖는 Socket filter의 강력한 성능을 위해서 고려된 부분입니다. 이 명령어는 interpreter context 가 struct sk_buff 이고 7개의 암묵적 피연산자가 있는 경우에만 사용할 수 있습니다. r6는 sk_buff pointer를 지정해야 하며 r0는 Packet에서 가져온 data를 포함하는 암시적인 출력이며 r1 ~ r5는 Scratch register이고 "BPF_ABS | BPF_LD" 또는 "BPF_IND | BPF_LD" 명령어에서 저장하는데 사용하면 안됩니다. 그리고 이 명령어는 암묵적으로 프로그램이 Packet의 경계를 넘어서 접근하려고 하면 Interpreter는 실행을 중단하며 이를 위해서 src_reg 또는 imm32 항목은 명시적으로 지정해야 합니다.
+
+예로써 "BPF_IND | BPF_W | BPF_LD"는 다음과 같은 의미입니다.
+
+/* r0 = Data in packet, r1 - r5 are clobbered, r6 = struct sk_buff pointer, src_reg + imm32 = struct sk_buff data offset */
+r0 = ntohl(*(u32 *) (((struct sk_buff *) r6)->data + src_reg + imm32));
+AF_XDP socket (XSK)
+
+AF_XDP 는 고 성능의 패킷처리를 위해서 최적화된 Address family중에 하나입니다.
+
+AF_XDP는 Kernel network stack을 거치지 않고 User space로 frames를 이동하는 것이며 Kernel을 완전히 우회(bypass) 하는 것은 아니지만 최대한 짧은 시간내에 Kernel내에서의 빠른 경로(in-kernel fast path)를 생성하며 Kernel space와 User space간 zero copy 및 XDP bytecode를 NIC에서 offloading 하는 이점등을 제공하며 Interrupt mode 및 Polling mode (DPDK polling mode driver는 항상 polling합니다. - 참고: DPDK PMD for AF_XDP ) 에서 실행가능합니다.
+
+수신된 frames를 XDP가 활성화된 다른 netdev로 재지향하려면 XDP 프로그램은 bpf_redirect_map() 함수로 XDP_REDIRECT action을 사용합니다. AF_XDP socket (XSK) 을 사용하면 XDP 프로그램이 수신된 frames를 사용자 공간에 있는 응용프로그램의 memory buffer 로 재지향할 수 있습니다.
+XDP 프로그램 예시 (Linux kernel source 에서 "samples/bpf/xdpsock_kern.c" 참고)
+// SPDX-License-Identifier: GPL-2.0
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
+#define MAX_SOCKS 4
+
+/* This XDP program is only needed for the XDP_SHARED_UMEM mode.
+ * If you do not use this mode, libbpf can supply an XDP program for you. (만약 이 모드를 사용하지 않으면 libbpf 에서 XDP 프로그램을 제공할수도 있음)
+ */
+
+struct {
+        __uint(type, BPF_MAP_TYPE_XSKMAP);
+        __uint(max_entries, MAX_SOCKS);
+        __uint(key_size, sizeof(int));
+        __uint(value_size, sizeof(int));
+} xsks_map SEC(".maps");
+
+static unsigned int rr;
+
+SEC("xdp_sock") int xdp_sock_prog(struct xdp_md *ctx)
+{
+        rr = (rr + 1) & (MAX_SOCKS - 1);
+
+        return bpf_redirect_map(&xsks_map, rr, XDP_DROP);
+}
+AF_XDP socket (XSK) 는 일반 socket() 함수를 통해서 생성하면 되고 Rx ring, Tx ring 으로 구성되며 Rx ring으로 Packet을 수신하고 Tx ring으로 전송할 수 있습니다. 이러한 ring은 setsockopt()를 통하여 XDP_RX_RING 과 XDP_TX_RING 으로 이를 등록 및 크기를 조정합니다. Rx / Tx descriptor ring은 UMEM이라고 하는 memory buffer 를 가르키는데 Rx /Tx 는 동일한 UMEM을 공유할 수 있어 Rx와 Tx간 Packet을 복사할 필요가 없습니다.
+
+수신흐름에서는 다음과 같이 umem과 ring buffer 를 다루게 됩니다.
+User side 에서는 umem free chunk를 만큼 fill queue (Producer, umem fq)에 채워줍니다.
+file queue 에 넣을 수 있는 umem free chunk 수를 확인합니다.
+fill queue 에 넣을 umem free chunk 수만큼 예약(reserve)합니다.
+fill queue 에 umem free chunk로부터 할당한 chunk들을 대입(fill addr)합니다.
+fill queue 에 공급완료(submit)처리합니다.
+Kernel side 에서는 수신된 데이터가 있는 경우 fill queue 에 공급된 chunk 들에 수신된 데이터를 저장하고 rx queue 로 옮깁니다.
+User side 에서는 Consumer queue (rx queue)으로부터 수신된 패킷을 처리할 수 있습니다.
+송신흐름에서는 다음과 같이 umem과 ring buffer 를 다루게 됩니다.
+User side의 수신흐름으로부터 수신된 패킷을 tx queue 에 채워줍니다.
+User side에서 Kernel side로 채웠음을 알리는 Signal (send함수 호출) 을 수행합니다.
+Kernel side 에서는 tx queue 를 전송시작하게 되고 전송되 완료되면 Consumer queue (umem cq)로 옮깁니다.
+User size는 Consumer queue (umem cq)로부터 송신완료된 chunk 를 umem free chunk 로 회수합니다.
+Ring buffer 는 그것을 채워주는 Producer와 처리하는 Consumer 로 나뉩니다.
+"struct xsk_ring_prod" 자료구조는 Producer 를 위한 자료구조로 미사용 umem chunk 에 대한 offset 을 채워주는 구현을 하게 됩니다.
+__u32 n_umem_free_chunk;
+__u32 n_chunk;
+__u32 pos;
+__u32 i;
+
+n_umem_free_chunk = get_umem_free_chunks(); /* 여기서 get_umem_free_chunk 함수는 사용자가 구현하는 것으로 umem chunk 자원을 할당/해제하는 일련의 구현에서 해제된 사용가능한 chunk 개수를 반환하는 구현에 대응합니다. */
+n_chunk = n_umem_free_chunk; /* 처음은 n_chunk 에 free chunk 수만큼을 대입하지만 이후 적절히 대입하는 구현이 고려되어야 합니다. */
+for(;;) {
+    n_reserved = xsk_ring_prod__reserve(&xsk_ring_prod, n_chunk, &pos);
+    if(n_reserved == n_chunk) break;    /* 채워넣을 Producer 공간의 예약이 되었으면 break */
+
+    /* Producer 예약이 요청한 갯수 n_chunk 만큼이 되지 않으면 */
+    if(xsk_ring_prod__need_wakeup(&xsk_ring_prod)) {
+        /* Producer 가 확보될 때까지 또는 일정시간 지연에 대한 구현 */
+    }
+}
+
+for(i = 0u;i < n_chunk;i++) {
+    /* CASE : 수신부 fill queue 목적인 경우 */   
+    *xsk_ring_prod__fill_addr(&xsk_ring_prod /* umem_fq */, pos + i) = alloc_umem(); /* 여기서 alloc_umem 함수는 사용자가 구현하는 것으로 free umem chunk 로부터 1개의 chunk 를 할당하여 그 offset을 반환하는 구현에 대응합니다. */
+
+    /* CASE : 송신부 tx queue 목적인 경우 */
+    xsk_ring_prod__tx_desc(&xsk_ring_prod /* txq */, pos + i)->addr = <송신할 데이터가 채워진 chunk 주소>;
+    xsk_ring_prod__tx_desc(&xsk_ring_prod /* txq */, pos + i)->len = <송신할 데이터의 크기>;
+}
+xsk_ring_prod__submit(&xsk_ring_prod, n_chunk); /* 이제 Producer 로 제공된 할당된 umem chunk를 처리할 수 있습니다. */
+
+/* CASE : 송신부 tx queue 목적인 경우 */
+if(xsk_ring_prod_needs_wakeup(&xsk_ring_prod /* txq */)) {
+    sendto(xsk_socket__fd(xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);   /* txq가 채워졌다고 알아서 Tx 되는 것은 아니며 이 때 Signal 목적의 send 함수를 호출해주어야 Tx 가 Trigger 됩니다. */
+}
+"struct xsk_ring_cons" 자료구조는 Producer 에서 채워넣은 umem chunk 영역을 처리 (수신된 데이터 또는 송신된 데이터)하기 위한 Consumer 를 위한 구현을 하게 됩니다.
+__u32 n_cons_size;
+__u32 pos;
+__u32 n_chunk;
+__u32 i;
+
+n_cons_size = ...;  /* 여기서 n_cons_size 는 xsk_ring_cons 가 담을 수 있는 최대 chunk 수 입니다. */
+n_chunk = xsk_rin_cons__peek(&xsk_ring_cons, n_cons_size, &pos);
+
+for(i = 0u;i < n_chunk;i++) {
+    /* CASE: Completion queue 목적인 경우 */
+    __u64 addr = *xsk_ring_cons__comp_addr(&xsk_ring_cons, pos + i); /* chunk offset 을 얻어옵니다. */
+    free_chunk(addr); /* 여기서 free_chunk 함수는 사용자가 구현하는 것으로 할당되었던 umem chunk인 addr을 umem chunk 로 반환하는 구현을 하게 됩니다. */
+
+    /* CASE: rx queue 목적인 경우 */
+    __u64 addr = xsk_ring_cons__rx_desc(&xsk_ring_cons, pos + i)->addr;
+    __u64 len = xsk_ring_cons__rx_desc(&xsk_ring_cons, pos + i)->len;
+}
+xsk_ring_cons__release(&xsk_ring_cons, n_chunk); /* Consumer 처리를 n_chunk 만큼 완료로 갱신합니다. */
+Mission
+각 기능 별 (Use case) 구현에 대한 방안을 검토하고 이에 대한 대응방안을 검토
+
+Routing은 ?
+eBPF kernel side program 내에서는 bpf_fib_lookup() helper 함수를 통해서 가능
+AF_XDP user side program 내에서는 RTM netlink 구현을 통해서 가능
+User side 에서 찾은 경로를 map 으로 공유하고 eBPF 에서 해당 map 을 통해서 경로 처리등의 응용 (Kernel source 에서 samples/bpf/xdp_router_ipv4_user.c 예제 소스 참고)
+multipath routing 도 이와 같은 맥락에서 처리해야 할 것으로 보임.
+Network Stack 은 ?
+eBPF kernel side program 내에서는 XDP_PASS 를 반환하면 Kernel network stack으로 흐르게 됨.
+AF_XDP side program 에서는 Network stack을 구현해야 함.
+NetFilter는 ?
+세션 (conntrack)은 ?
+HA / LB 는 (세션동기화, ...) ?
+VPN (xfrm, IPSecVPN, OpenVPN) 은?
+IPSec VPN
+BPF 및 XDP 그리고 AF_XDP (xsk) 의 기반 사항 사전 이해 필요
+XDP 흐름이 아닌 kernel stack (XDP_PASS) 을 사용한다는 것은 단점으로는 skbuff 의 할당와 복사 overhead가 존재한다는 것이며 장점으로는 kernel stack에 기 구현된 개발사항들을 활용할 수 있다는 것.
+BPF/XDP program은 Kernel side 에서 동작하는 binary code 이며 크게 인입부 3가지 및 tc hook 에서 호출될 수 있음.
+Driver / Native / SKB, 그리고 TC
+각 XDP program hook은 ABORT (중지), DROP (패킷 버림), PASS (Kernel stack진입), REDIRECT (다른 NIC 또는 AF_XDP로 재지향), TX (전송) 등의 흐름 결정이 선택요소
+xfrm(ipsec) offload 가 있는 NIC의 경우 XDP_TX 에서 xfrm loockup 및 암호화를 진행하는 기능이 있는 driver 가 존재
+즉, 암호화를 XDP_TX 에서 Tx 직전에 수행하는 방식
+이 경우 xfrm offload 는 Driver 마다 제약사항이 다소 다를 수 있으며 IPv6의 확장헤더가 존재하는 패킷의 암호화에는 제약사항이 존재할 경우가 많음.
+BPF helper 함수로 bpf_skb_get_xfrm_state (SAD lookup) 가 존재. 단, 이 함수는 skbuff 를 인자로 필요로 함.
+skbuff 에 xfrm dst 가 제공되는 상태이후 (tc에서의 xdp hook 등에서만 사용 가능성) 에서 사용가능한 것으로 보임. (사용상 제약조건 파악 필요)
+복호화시 결국 bpf helper 구현 필요
+AF_XDP user side 에서 처리하고자 하는 경우
+IKE/IPSec 키교환의 경우 strongswan 의 socket plugin 을 AF_XDP 계층의 plugin으로 교체 필요.
+구체적인 구현은 해봐야 하겠지만 전체적인 패킷이 모두 AF_XDP user side 프로그램으로 단일화 해야 하는 것에 대한 설계관점이 필요해보임. (UMEM 공유 및 분할등과 함께 xsk 운영 방식 등)
+Kernel network stack을 사용하지 않게 되므로 socket으로 구현한 모든 프로그램이 대응 수정이 필요
+AF_XDP xsk 흐름을 사용한다는 것은 많은 kernel stack들을 우회한다는 의미와 같으므로 이에 필요한 우회한 내용들에서 필요한 구현을 AF_XDP에서 구현해야 한다는 의미. => 우외한 만큼 성능을 얻는 것이며 우회하지 않아야 하는 사항은 개발이 필요하고 개발 요소가 크다는 단점
+XDP/xsk program 에서 IPSec 을 처리하기 위해서는 head/tail room 제약이 존재할 수 있음.
+BPF / XDP / xsk 등의 구조 관점에서의 다르게 설계되어야 하는 방안들
+1안) 차단 패킷은 BPF/XDP 에서 map을 통하여 DROP으로 처리하고 이를 제외한 모든 패킷이 AF_XDP xsk 로 흐르는 관점인 경우. (즉, 모든 패킷 흐름이 kernel stack을 거치지 않는 구조)
+보안 정책은 AF_XDP xsk User side application에서 처리. 세션 생성등. 그리고 세션은 map 으로 관리. BPF/XDP에서 map에 차단행위인 경우 DROP처리
+IKE / IPSec 은 모두 AF_XDP xsk 에서 처리가 필요.
+다른 모든 socket 프로그램이 Kernel network stack을 타지 않기 때문에 이에 대한 수정이 필요한 단점.
+2안) 모든 흐름 (보안정책) 은 기본적으로 Kernel stack을 통과하며 컨텐츠 보안 탐지/차단이 필요한 패킷만 보안정책 이후 AF_XDP xsk 로 흐르는 관점의 경우.
+보안정책 흐름은 기존 v2.1 과 거의 유사성을 갖고 Post rouing 또는 TC hook 등에서 BPF/XDP hook이 실행되어 컨텐츠 보안을 AF_XDP xsk 로 전달하고 User side 에서 컨텐츠 보안 탐지/차단을 처리
+보안정책의 행위 차단은 nic 수신부 XDP hook에서 map으로 공유받아 차단
+IKE 는 Kernel stack 을 경유하여 strongswan에서 별도의 고려 없이 처리, IPSec 은 기존 Kernel stack 의 xfrm module 에서 처리
+컨텐츠 보안 탐지/차단만 AF_XDP를 경유하여 Tx 유무를 설정하므로 나머지는 모두 기존 구현을 유지할 수 있음.
+컨텐츠 보안부분이 User side program이 성능상 유리하다는 관점이 필요
+3안)
+키교환 / 암호화 / 복호화에 대한 관점에서의 BPF/XDP 의 처리
+키교환
+1안) AF_XDP로 수신된 IKE packet을 처리하는 strongswan내의 AF_XDP plugin 개발하는 방안
+BPF로 수신된 IKE packet (목적지 MAC과 주소가 내 인터페이스인 IKE 또는 NonESP marker packet) 은 XDP_REDIRECT로 AF_XDP xsk socket으로 전달
+strongswan에 별도의 AF_XDP xsk socket plugin을 구현필요
+Kernel의 xfrm module 에서의 SPD 및 SAD는 유지되도록 되어야 할 필요성 있음.
+장점:
+Kernel stack을 사용하지 않음.
+단점:
+IKE daemon 에서 처리해야 함에 따른 구현이 필요. 구현상 복잡.
+보안정책을 본 이후 flow 에서 strongswan으로 처리해야 하는 것을 고려해야 함.
+2안) IKE packet은 그대로 strongswan의 UDP socket을 통하여 처리하도록 하는 방안
+BPF로 수신된 IKE packet (목적지 MAC과 주소가 내 인터페이스인 IKE 또는 NonESP marker packet) 은 XDP_PASS로 Kernel stack localin 처리하여 strongswan의 UDP socket으로 인입처리 및 localout처리
+장점:
+기존 IKE daemon의 UDP socket plugin을 그대로 수용. 구현이 용이
+단점:
+Kernel stack을 사용함.
+암호화
+1안) XDP_TX 후반부에서 Encrypt flow 를 구현.
+장점:
+XDP IPSec offload 기능위치를 의미하므로 offload 가 지원되는 경우 최적의 암호화 성능 도출 가능성.
+단점:
+XDP IPSec offload 기능위치를 의미하므로 offload 지원하지 않는 NIC driver인 경우 모두 패치가 필요
+2안) AF_XDP 에서 Tx queue에 넣기 전에 Encrypt flow 를 구현.
+복호화
+1안) ..
+참고) 작성된 첨부 예제 "netlink_ipsec_monitor-20220620.tar.gz" 는 User application 구현에서 Netlink 통신을 사용하여 xfrm의 SPD 및 SAD를 확보할 수 있는 방법론에 대한 예시를 작성한 것
+Bridge forwarding은 ?
+SSLInspection은 ?
+QoS / TC (Traffic Control) 는 ?
+DPDK application의 필요성 ?
+일반 기존 flow대비하여 Overhead는 어디에서 발생하는가 ?
+Hardware 가속 (Crypto / Offload / Hash / ...) 이 가능한 부분은 ?
+XDP_TX 후반부에 IPSec Encrypt 처리하는 ipsec offload 가 지원되는 NIC가 존재
+Virtualization / Container / Cloud / OVS (Open vSwitch) 에서의 가용범위는 ?
+기존 Socket기반 Application들의 구동활용은 (DHCP, Quagga, Keepalived, strongswan, syslog, snmp, ...) ?
+참고자료
+주요 용어 정리
+XDP : eXpress Data Path
+XDP (eXpress Data Path) From MINZKN.COM
+BPF : Berkeley Packet Filter
+eBPF : Extended Berkeley Packet Filter
+cBPF : Classic Berkeley Packet Filter
+하나의 cBPF code 는 크게 4가지 요소를 담고 있으며 첫번째 요소 16bits는 OP-CODE이고 두번째 요소 8bits 는 True 조건일 때 분기 Offset, 세번째 요소의 8bits False 조건일 때 분기 Offset, 그리고 마지막 요소 32bits 는 OP-CODE에 따른 특정 값을 넘겨줘야 할 때 사용합니다. OP-CODE 나 sock_filter 자료구조는 "linux/filter.h" 헤더를 참고할 수 있습니다.
+Socket filter 예제 (cBPF) From MINZKN.COM
+LLVM : (이전 이름: Low Level Virtual Machine => 지금은 LLVM그 자체가 이름임) 은 컴파일러의 기반구조. 언어에 가상 기계를 생성, 가상 기계가 언어에 독립적인 최적화를 실행
+Clang : 클랭 - C, C++, 오브젝티브-C, 오브젝티브-C++ 프로그래밍 언어를 위한 컴파일러 프론트엔드. LLVM을 백엔드로 사용
+대부분의 C 로 작성된 프로그램들은 CC 환경변수 빌드인 경우 다음과 같이 clang으로 빌드할 수 있음.
+make CC=clang
+BCC : BPF Compiler Collection
+DPDK 검토 (Data Plane Development Kit)
+XDP 관련 주요 공개프로젝트
+https://xdp-project.net/
+https://github.com/xdp-project => :) 여기 하위 프로젝트는 모두 볼 필요가 있음
+https://github.com/xdp-project/xdp-project
+https://github.com/xdp-project/xdp-tools
+libxdp - Man Page
+https://github.com/xdp-project/bpf-examples
+https://github.com/xdp-project/bpf-research
+https://github.com/xdp-project/libbpf => :) 자주 쓰게될 library.
+https://github.com/xdp-project/xdp-tutorial => :) 기본적으로 봐야 하는 문서 및 예제들
+https://github.com/xdp-project/xdp-tutorial/blob/master/setup_dependencies.org => :) 환경 준비요소들에 대해서 정리되어 있음.
+https://github.com/xdp-project/BNG-router
+https://github.com/xdp-project/xdp-cpumap-tc
+https://github.com/xdp-project/xdp-project.github.io
+https://github.com/xdp-project/xdp-paper
+https://github.com/xdp-project/xdp-paper/blob/master/xdp-the-express-data-path.pdf
+https://www.iovisor.org/technology/xdp
+https://github.com/iovisor/bpf-docs/blob/master/Express_Data_Path.pdf
+https://www.youtube.com/watch?v=NlMQ0i09HMU&feature=youtu.be&t=3m3s
+https://www.openstack.org/videos/barcelona-2016/leveraging-express-data-path-xdp-for-programmable-high-performance-data-path-in-openstack
+http://www.slideshare.net/IOVisor/express-data-path-linux-meetup-santa-clara-july-2016?qid=247820dc-7ac0-494e-8e6c-3a21daeda22a&v=&b=&from_search=5
+http://people.netfilter.org/hawk/presentations/xdp2016/xdp_intro_and_use_cases_sep2016.pdf
+http://netdevconf.org/1.2/session.html?herbert-xdp-workshop
+https://github.com/iovisor/xdp-vagrant
+https://www.massgeneral.org/neurology/xdp-center/research/ccxdp-funded-projects
+https://project-awesome.org/zoidbergwill/awesome-ebpf => "Awesome eBPF - A curated list of awesome projects related to eBPF"
+https://cilium.io/
+https://github.com/cilium/cilium
+https://docs.cilium.io/en/latest/bpf/ => "BPF and XDP Reference Guide" => :) 전반적인 BPF 아키텍쳐를 이해하기 좋음
+https://github.com/zoidbergwill/awesome-ebpf
+https://github.com/nanovms/nanos
+https://github.com/vmware/p4c-xdp
+https://github.com/massoudasadi/packiffer
+https://crates.io/crates/libbpf-sys/
+https://github.com/libbpf/libbpf-sys
+https://github.com/facebookincubator/katran => :)
+Katran is a C++ library and BPF program to build high-performance layer 4 load balancing forwarding plane. Katran leverages XDP infrastructure from the kernel to provide an in-kernel facility for fast packet's processing.
+https://engineering.fb.com/2018/05/22/open-source/open-sourcing-katran-a-scalable-network-load-balancer/
+DPDK Project
+Programmer’s Guide
+58. IPsec Packet Processing Library
+DPDK PMD for AF_XDP View details...
+Cloudflare Project
+uBPF
+Extending the matching abilities of OpenFlow (OpenFlow에 BPF를 도입해 보는 연구, 딱히 진행된 사항이 보이지는 않음)
+Github - Openflow to BPF
+Github - Software switch
+Github - Controller
+Suricata IPS/IDS
+Suricata User Guide
+XDP Forwarding
+mTCP
+XDP-Firewall
+XDP 관련 주요 참고 영상
+Kernel-bypass techniques for high-speed network packet processing
+XDP (eXpress Data Path) as a building block for other FOSS projects => :) XDP 소개영상
+eBPF Summit 2020 On Demand
+Day1
+Day2
+AF_XDP - The Linux Kernel documentation => :) AF_XDP 에 대한 기준문서. 기본적으로 읽어야 할 문서
+BPF / XDP 8월 세미나 KossLab
+XDP를 활용한 네트워크 패킷 처리 - MONITORAPP Blog
+Kernel bypass From Cloudflare
+netmap - the fast packet I/O framework
+How to drop 10 million packets per second From Cloudflare
+L4Drop: XDP DDoS Mitigations, Cloudflare
+XDP: A SIMPLE LIBRARY FOR TEACHING A DISTRIBUTED PROGRAMMING MODULE
+[12] BPF 와 XDP 사용하기
+XDP Production Usage:DDoS Protection and L4LB
+XDP in practice - Integrating XDP into our DDoS mitigation pipeline From CLOUDFLARE
+확장 BPF - 네트워크 언저리
+The BSD Packet Filter: A New Architecture for User-level Packet Capture
+Zero-Copy BPF
+Documentation/networking/packet mmap.txt
+eBPF를 통한 클라우드 네트워킹 성능 향상 - NETLOX
+bpf(2) man page
+The cornerstone of new Linux network technology -- ebpf and XDP
+Firewalling with BPF/XDP: Examples and Deep Dive
+사내 관련 검토 이슈들
+#102088 : [TCP Stack] Userlevel TCP Stack 기술 조사
+Ubuntu 20.04 LTS 에서 Linux Kernel v5.10 설치
+# wget https://kernel.ubuntu.com/~kernel-ppa/mainline/v5.10.116/amd64/linux-headers-5.10.116-0510116-generic_5.10.116-0510116.202205151945_amd64.deb
+# wget https://kernel.ubuntu.com/~kernel-ppa/mainline/v5.10.116/amd64/linux-image-unsigned-5.10.116-0510116-generic_5.10.116-0510116.202205151945_amd64.deb
+# wget https://kernel.ubuntu.com/~kernel-ppa/mainline/v5.10.116/amd64/linux-modules-5.10.116-0510116-generic_5.10.116-0510116.202205151945_amd64.deb
+# wget https://kernel.ubuntu.com/~kernel-ppa/mainline/v5.10.116/amd64/linux-headers-5.10.116-0510116_5.10.116-0510116.202205151945_all.deb
+# sudo dpkg -i *.deb
+
+
+
+Background, history.
+BPF origins as a generic, fast and ’safe’ solution to packet parsing
+tcpdump → libpcap → compiler → bytecode → kernel interpreter
+Intended as early drop point in AF PACKET kernel receive path
+JIT’able for x86 64 since 2011, ppc, sparc, arm, arm64, s390, mips
+# tcpdump -i any -d ip
+(000) ldh [14]
+(001) jeq #0x800 jt 2 jf 3
+(002) ret #65535
+(003) ret #0
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 2 / 16
+2012, No longer networking only!
+BPF engine used for seccomp (syscall filtering)
+Used inside Chrome as a sandbox, minimal example in bpf asm:
+ld [4] /* offsetof(struct seccomp_data, arch) */
+jne #0xc000003e, bad /* AUDIT_ARCH_X86_64 */
+ld [0] /* offsetof(struct seccomp_data, nr) */
+jeq #15, good /* __NR_rt_sigreturn */
+jeq #231, good /* __NR_exit_group */
+jeq #60, good /* __NR_exit */
+jeq #0, good /* __NR_read */
+jeq #1, good /* __NR_write */
+jeq #5, good /* __NR_fstat */
+jeq #9, good /* __NR_mmap */
+[...]
+bad: ret #0 /* SECCOMP_RET_KILL */
+good: ret #0x7fff0000 /* SECCOMP_RET_ALLOW */
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 3 / 16
+BPF (any flavour) used in the kernel today.
+Networking
+Socket filtering for most protocols
+AF PACKET fanout demuxing
+SO REUSEPORT socket demuxing
+tc classifier (cls bpf) and actions (act bpf)
+team driver load balancing
+netfilter xtables (xt bpf)
+Some misc ones: PTP classifier, PPP and ISDN
+Tracing
+BPF as kprobes-based extensions
+Sandboxing
+syscall filtering with seccomp
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 4 / 16
+Classic BPF (cBPF) in a nutshell.
+32 bit, available register: A, X, M[0-15], (pc)
+A used for almost everything, X temporary register, M[] stack
+Insn: 64 bit (u16:code, u8:jt, u8:jf, u32:k)
+Insn classes: ld, ldx, st, stx, alu, jmp, ret, misc
+Forward jumps, max 4096 instructions, statically verified in kernel
+Linux-specific extensions overload ldb/ldh/ldw with k← off+x
+bpf asm: 33 instructions, 11 addressing modes, 16 extensions
+Input data/”context” (ctx), e.g. skb, seccomp data
+Semantics of exit code defined by application
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 5 / 16
+Extended BPF (eBPF) as next step.
+64 bit, 32 bit sub-registers, available register: R0-R10, stack, (pc)
+Insn: 64 bit (u8:code, u8:dst reg, u8:src reg, s16:off, s32:imm)
+New insns: dw ld/st, mov, alu64 + signed shift, endian, calls, xadd
+Forward (& backward*) jumps, max 4096 instructions
+Generic helper function concept, several kernel-provided helpers
+Maps with arbitrary sharing (user space apps, between eBPF progs)
+Tail call concept for eBPF programs, eBPF object pinning
+LLVM eBPF backend: clang -O2 -target bpf -o foo.o foo.c
+C → LLVM → ELF → tc → kernel (verification/JIT) → cls bpf (exec)
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 6 / 16
+eBPF, General remarks.
+Stable ABI for user space, like the case with cBPF
+Management via bpf(2) syscall through file descriptors
+Points to kernel resource → eBPF map / program
+No cBPF interpreter in kernel anymore, all eBPF!
+Kernel performs internal cBPF to eBPF migration for cBPF users
+JITs for eBPF: x86 64, s390, arm64 (remaining ones are still cBPF)
+Various stages for in-kernel cBPF loader
+Security (verifier, JIT spraying mitigations, RO images, unpriv restr.)
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 7 / 16
+eBPF and cls bpf.
+cls bpf as cBPF-based classifier in 2013, eBPF support since 2015
+Minimal fast-path, just calls into BPF PROG RUN()
+Instance holds one or more BPF programs, 2 operation modes:
+Calls into full tc action engine tcf exts exec() for e.g. act bpf
+Direct-action (DA) fast-path for immediate return after BPF run
+In DA, eBPF prog sets skb->tc classid, returns action code
+Possible codes: ok, shot, stolen, redirect, unspec
+tc frontend does all the setup work, just sends fd via netlink
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 8 / 16
+eBPF and cls bpf.
+skb metadata:
+Read/write: mark, priority, tc index, cb[5], tc classid
+Read: len, pkt type, queue mapping, protocol, vlan *, ifindex, hash
+Tunnel metadata:
+Read/write: tunnel key for IPv4/IPv6 (dst-meta by vxlan, geneve, gre)
+Helpers:
+eBPF map access (lookup/update/delete)
+Tail call support
+Store/load payload (multi-)bytes
+L3/L4 csum fixups
+skb redirection (ingress/egress)
+Vlan push/pop and tunnel key
+trace printk debugging
+net cls cgroup classid
+Routing realms (dst->tclassid)
+Get random number/cpu/ktime
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 9 / 16
+cls bpf, Invocation points. sch_handle_ingress() sch_handle_egress()
+__netif_receive_skb_core() __dev_queue_xmit()
+Qdisc
+TX path
+RX path
+ingress qdisc clsact qdisc
+fq_codel, sfq, drr, ...
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 10 / 16
+cls bpf, Example setup in 1 slide.
+$ clang -O2 -target bpf -o foo.o foo.c
+# tc qdisc add dev em1 clsact
+# tc qdisc show dev em1
+[...]
+qdisc clsact ffff: parent ffff:fff1
+# tc filter add dev em1 ingress bpf da obj foo.o sec p1
+# tc filter add dev em1 egress bpf da obj foo.o sec p2
+# tc filter show dev em1 ingress
+filter protocol all pref 49152 bpf
+filter protocol all pref 49152 bpf handle 0x1 foo.o:[p1] direct-action
+# tc filter show dev em1 egress
+filter protocol all pref 49152 bpf
+filter protocol all pref 49152 bpf handle 0x1 foo.o:[p2] direct-action
+# tc filter del dev em1 ingress pref 49152
+# tc filter del dev em1 egress pref 49152
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 11 / 16
+tc frontend.
+Common loader backend for f bpf, m bpf, e bpf
+Walks ELF file to generate program fd, or fetches fd from pinned
+Setup via ELF object file in multiple steps:
+Mounts bpf fs, fetches all ancillary sections
+Sets up maps (fd from pinned or new with pinning)
+Relocations for injecting map fds into program
+Loading of actual eBPF program code into kernel
+Setup and injection of tail called sections
+Grafting of existing prog arrays, dumping trace pipe
+Also supports passing map fds via UDS to agent
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 12 / 16
+tc eBPF examples, minimal module.
+$ cat >foo.c <<EOF
+#include "bpf_api.h"
+__section_cls_entry
+int cls_entry(struct __sk_buff *skb)
+{
+/* char fmt[] = "hello prio%u world!\n"; */
+skb->priority = get_cgroup_classid(skb);
+/* trace_printk(fmt, sizeof(fmt), skb->priority); */
+return TC_ACT_OK;
+}
+BPF_LICENSE("GPL");
+EOF
+$ clang -O2 -target bpf -o foo.o foo.c
+# tc filter add dev em1 egress bpf da obj foo.o
+# tc exec bpf dbg # -> dumps trace_printk()
+# cgcreate -g net_cls:/foo
+# echo 6 > foo/net_cls.classid
+# cgexec -g net_cls:foo ./bar # -> app ./bar xmits with priority of 6
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 13 / 16
+tc eBPF examples, map sharing.
+#include "bpf_api.h"
+BPF_ARRAY4(map_sh, 0, PIN_OBJECT_NS, 1);
+BPF_LICENSE("GPL");
+__section("egress") int egr_main(struct __sk_buff *skb)
+{
+int key = 0, *val;
+val = map_lookup_elem(&map_sh, &key);
+if (val)
+lock_xadd(val, 1);
+return BPF_H_DEFAULT;
+}
+__section("ingress") int ing_main(struct __sk_buff *skb)
+{
+char fmt[] = "map val: %d\n";
+int key = 0, *val;
+val = map_lookup_elem(&map_sh, &key);
+if (val)
+trace_printk(fmt, sizeof(fmt), *val);
+return BPF_H_DEFAULT;
+}
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 14 / 16
+tc eBPF examples, tail calls.
+#include "bpf_api.h"
+BPF_PROG_ARRAY(jmp_tc, JMP_MAP, PIN_GLOBAL_NS, 1);
+BPF_LICENSE("GPL");
+__section_tail(JMP_MAP, 0) int cls_foo(struct __sk_buff *skb)
+{
+char fmt[] = "in cls_foo\n";
+trace_printk(fmt, sizeof(fmt));
+return TC_H_MAKE(1, 42);
+}
+__section_cls_entry int cls_entry(struct __sk_buff *skb)
+{
+char fmt[] = "fallthrough\n";
+tail_call(skb, &jmp_tc, 0);
+trace_printk(fmt, sizeof(fmt));
+return BPF_H_DEFAULT;
+}
+$ clang -O2 -DJMP_MAP=0 -target bpf -o graft.o graft.c
+# tc filter add dev em1 ingress bpf obj graft.o
+Daniel Borkmann tc and cls bpf with eBPF January 31, 2016 15 / 16
+Code and further information.
+Take-aways:
+No, development on tc is not in deep hibernation mode ;)
+eBPF implementation details may be complex, BUT workflow and
+writing eBPF programs is really easy (perhaps easiest in tc?)
+Low overhead, fully programmable for your specific use-case
+Native performance when JITed!
+Code:
+Everything upstream in kernel, iproute2 and llvm!
+Available from usual places, e.g. https://git.kernel.org/
+Some further information:
+Man pages bpf(2), tc-bpf(8)
+Examples in iproute2’s examples/bpf/
+Documentation/networking/filter.txt
+
+
+
+https://www.dpdk.org/wp-content/uploads/sites/35/2018/10/pm-06-DPDK-PMD-for-AF_XDP.pdf
+https://medium.com/@dany74q/pyebpf-ebpf-proxy-routines-generation-and-python-callbacks-iovisor-bcc-wrapper-42d6cf558be4
+https://www.brendangregg.com/Slides/SCALE2017_perf_analysis_eBPF.pdf
+https://dev.to/satrobit/absolute-beginner-s-guide-to-bcc-xdp-and-ebpf-47oi
+https://rdelfin.com/blog/post_ebpf_002
+https://android.googlesource.com/platform/external/bcc/+/HEAD/docs/tutorial_bcc_python_developer.md
+https://velog.io/@eeeffeee/BCC%EB%A5%BC-%ED%86%B5%ED%95%9C-Linux-IO-%EC%B6%94%EC%A0%81
+
+https://github.com/iovisor/bcc/blob/master/docs/tutorial_bcc_python_developer.md
+https://github.com/iovisor/bcc/blob/master/docs/reference_guide.md
+
+https://project-awesome.org/zoidbergwill/awesome-ebpf#projects-related-to-ebpf
+
+https://www.kernel.org/doc/html/latest/networking/af_xdp.html
+
+https://github.com/ChunghanYi/spnhacks/blob/master/misc/Linux_XDP_Overview1.pdf
+
+https://homepages.dcc.ufmg.br/~mmvieira/so/papers/Fast_Packet_Processing_with_eBPF_and_XDP.pdf
+https://inl.info.ucl.ac.be/system/files/tcp-ebpf.pdf
+
+
+https://www.cse.iitb.ac.in/~mythili/os/anno_slides/network_stack_kernel_bypass_slides.pdf
+
+
+Bringing TSO/GRO and Jumbo frames to XDP
